@@ -2,5 +2,5 @@
 events.json
 
 # Built binaries
-ping
+/ping
 cmd/ping/ping
