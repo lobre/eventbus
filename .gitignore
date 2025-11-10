@@ -1,0 +1,6 @@
+# Generated at runtime
+events.json
+
+# Built binaries
+ping
+cmd/ping/ping
