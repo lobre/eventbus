@@ -10,15 +10,18 @@ This library is **not** production-ready: it has no distribution, no durability 
   The bus keeps an append-only slice of `Event` values in memory. This is your “event store” for replaying history or building projections.
 
 - **Simple event type**  
-  `Event` has `Timestamp`, `Topic`, `Type`, and `Payload`.  
+  `Event` has `Timestamp`, `Topic`, `Type`, and `Payload`.
+
   Use `NewEvent(topic, type, payload)` to create events with an automatic UTC timestamp, keeping event creation boilerplate low.
 
 - **Pub/sub via Go channels**  
-  `Subscribe(topic, bufferSize)` returns a `Subscription` with a `chan Event`.  
+  `Subscribe(topic, bufferSize)` returns a `Subscription` with a `chan Event`.
+
   Because you get a real channel, you can use `select` to combine events with context cancellation, timers, other channels, etc. This makes it easy to plug the bus into HTTP handlers, background workers, SSE streams, and so on.
 
 - **Configurable buffer size with drop-if-full semantics**  
-  Each subscription has its own buffered channel. When the buffer is full, new events for that subscriber are dropped (publishers never block).  
+  Each subscription has its own buffered channel. When the buffer is full, new events for that subscriber are dropped (publishers never block).
+
   The buffer size acts as a behavior knob:
   - `bufferSize = 1` works well for “refresh” or “state changed” signals where you only care that *something* changed; bursts of such events effectively coalesce into at most one pending event.
   - Larger buffers (e.g. 256 or 1024) are better for logging, debugging, or projections where you want to tolerate bursts and see more of the event stream.
