@@ -1,71 +1,62 @@
 # eventbus
 
-Minimal in-memory event bus for Go with pub/sub, an append-only event log, and optional JSON file persistence.
+A minimal in-memory event bus for Go, intended as a playground for CQRS and event-sourcing patterns.
 
-## Goals
+This library is **not** production-ready: it has no distribution, no durability guarantees beyond simple JSON dumps, and no scalability story. It is, however, very handy for small apps, demos, and experiments.
 
-- Provide a tiny, self-contained event bus for learning CQRS/event-sourcing concepts.
-- Keep everything in memory, single process, and goroutine-safe.
-- Make it easy to:
-  - append events to an in-memory log,
-  - publish events to subscribers,
-  - subscribe via channels,
-  - save/load the event log as JSON.
+## Features
 
-## Non-goals
+- **In-memory event log**  
+  The bus keeps an append-only slice of `Event` values in memory. This is your “event store” for replaying history or building projections.
 
-- No distribution or clustering.
-- No durable, append-only storage beyond a simple JSON snapshot.
-- No advanced querying or filtering layer over the event store.
-- No consumer groups, load balancing, or delivery guarantees beyond best effort.
+- **Simple event type**  
+  `Event` has `Timestamp`, `Topic`, `Type`, and `Payload`.  
+  Use `NewEvent(topic, type, payload)` to create events with an automatic UTC timestamp, keeping event creation boilerplate low.
 
-## Design choices
+- **Pub/sub via Go channels**  
+  `Subscribe(topic, bufferSize)` returns a `Subscription` with a `chan Event`.  
+  Because you get a real channel, you can use `select` to combine events with context cancellation, timers, other channels, etc. This makes it easy to plug the bus into HTTP handlers, background workers, SSE streams, and so on.
 
-- **Event type**: `Event` with `ID`, `Timestamp`, `Topic`, `Type`, and `Payload`.
-- **Event store**: `InMemoryEventStore` implementing `EventStore` (`Append`, `All`).
-- **Bus**: `InMemoryBus` implementing `Bus` (`Publish`, `Subscribe`, `Events`).
-- **Subscriptions**:
-  - Each subscriber gets its own buffered channel.
-  - If the channel is full, events are dropped for that subscriber (no backpressure).
-  - Subscriptions are topic-filtered; empty topic means “receive all events”.
-- **Persistence**:
-  - `SaveToFile` writes all events as a JSON array.
-  - `LoadFromFile` reads events back and can be used to seed a new `InMemoryBus`.
+- **Configurable buffer size with drop-if-full semantics**  
+  Each subscription has its own buffered channel. When the buffer is full, new events for that subscriber are dropped (publishers never block).  
+  The buffer size acts as a behavior knob:
+  - `bufferSize = 1` works well for “refresh” or “state changed” signals where you only care that *something* changed; bursts of such events effectively coalesce into at most one pending event.
+  - Larger buffers (e.g. 256 or 1024) are better for logging, debugging, or projections where you want to tolerate bursts and see more of the event stream.
 
-## Structure
+- **Full-log iteration for projections**  
+  `ForEachEvent(topic, fn)` iterates over the entire event log (optionally filtered by topic) and calls `fn` for each event.  
+  This is enough to implement simple projection systems, such as:
+  - building in-memory read models, or
+  - populating SQL tables optimized for queries, using events as the source of truth and projections as derived state.
 
-- `eventbus.go` — the entire event bus library (single file).
-- `cmd/ping/main.go` — minimal example HTTP service using the event bus.
+- **JSON dump/load via io.Writer/io.Reader**  
+  - `Dump(w io.Writer)` writes all events as pretty-printed JSON.
+  - `Load(r io.Reader)` replaces the entire log from JSON.  
+  Because these use `io.Writer` / `io.Reader`, you can:
+  - save regular snapshots to files,
+  - push backups to a GitHub gist or object storage,
+  - or stream logs over HTTP.  
+  You can trigger dumps on a timer or after every N events from within a subscriber to get simple, ongoing backup behavior.
 
-## Usage
+- **Small, single-file implementation**  
+  The entire library lives in `eventbus.go` and is easy to copy into other projects.
 
-1. Initialize the module (from the project root):
+## Example
 
-```
-go mod init github.com/lobre/eventbus
-```
+There is a minimal example command under `cmd/ping/main.go` that:
 
-2. Build the example command:
+- creates a bus (optionally loading from `events.json`),
+- starts a subscriber that logs all events,
+- exposes an HTTP endpoint that publishes events.
 
-```
+To build and run it from the project root:
+
+```bash
 go build -o ping ./cmd/ping
-```
 
-3. Run it:
-
-```
 ./ping
-```
 
-4. In another terminal, publish an event:
-
-```
 curl "http://localhost:8080/ping"
 ```
 
-5. Watch events logged in the server output.
-
-On shutdown (`Ctrl+C`), events are saved to `events.json` and reloaded on the next start.
-
-See `cmd/ping/main.go` for the full usage example.
-
+You’ll see the events logged in your terminal.

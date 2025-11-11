@@ -3,6 +3,7 @@ package eventbus
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -10,72 +11,26 @@ import (
 
 // Event is the unit that gets stored and published.
 type Event struct {
-	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
 	Topic     string    `json:"topic"`
 	Type      string    `json:"type"`
 	Payload   any       `json:"payload"`
 }
 
-// SubscribeOptions configures a subscription.
-type SubscribeOptions struct {
-	// Topic filters events. If empty, the subscriber receives all events.
-	Topic string
-
-	// BufferSize is the size of the internal channel.
-	// If 0, a default buffer size is used.
-	BufferSize int
+// NewEvent builds an Event with the current UTC timestamp.
+func NewEvent(topic, typ string, payload any) Event {
+	return Event{
+		Timestamp: time.Now().UTC(),
+		Topic:     topic,
+		Type:      typ,
+		Payload:   payload,
+	}
 }
 
 // Subscription is used to receive events and stop listening.
 type Subscription struct {
-	// C is the channel where events are delivered.
-	C <-chan Event
-
-	// Close stops the subscription and frees resources.
+	C     <-chan Event
 	Close func()
-}
-
-// EventStore represents an append-only event log.
-type EventStore interface {
-	Append(e Event) (int, error)
-	All() []Event
-}
-
-// InMemoryEventStore is a goroutine-safe in-memory event store.
-type InMemoryEventStore struct {
-	mu     sync.RWMutex
-	events []Event
-}
-
-func NewInMemoryEventStore() *InMemoryEventStore {
-	return &InMemoryEventStore{
-		events: make([]Event, 0),
-	}
-}
-
-func (s *InMemoryEventStore) Append(e Event) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.events = append(s.events, e)
-	return len(s.events) - 1, nil
-}
-
-func (s *InMemoryEventStore) All() []Event {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]Event, len(s.events))
-	copy(out, s.events)
-	return out
-}
-
-// Bus is the main pub/sub interface.
-type Bus interface {
-	Publish(ctx context.Context, e Event) error
-	Subscribe(opts SubscribeOptions) (*Subscription, error)
-	Events() EventStore
 }
 
 type subscriber struct {
@@ -83,49 +38,83 @@ type subscriber struct {
 	ch    chan Event
 }
 
-type InMemoryBus struct {
+// Bus is an in-memory pub/sub bus with an append-only event log.
+type Bus struct {
 	mu          sync.Mutex
-	store       EventStore
+	events      []Event
 	subscribers map[*subscriber]struct{}
 }
 
-// NewBus creates an InMemoryBus with an optional initial event slice.
-func NewBus(initialEvents []Event) *InMemoryBus {
-	store := NewInMemoryEventStore()
-	for _, e := range initialEvents {
-		_, _ = store.Append(e)
-	}
-
-	return &InMemoryBus{
-		store:       store,
+// New creates a Bus with an empty event log.
+func New() *Bus {
+	return &Bus{
+		events:      make([]Event, 0),
 		subscribers: make(map[*subscriber]struct{}),
 	}
 }
 
-func (b *InMemoryBus) Events() EventStore {
-	return b.store
-}
+// ForEachEvent calls fn for every event in the log.
+// If topic is non-empty, only events with that topic are processed.
+func (b *Bus) ForEachEvent(topic string, fn func(Event)) {
+	b.mu.Lock()
+	eventsCopy := make([]Event, len(b.events))
+	copy(eventsCopy, b.events)
+	b.mu.Unlock()
 
-func bufferSizeOrDefault(size int) int {
-	if size <= 0 {
-		return 1024
+	for _, e := range eventsCopy {
+		if topic == "" || e.Topic == topic {
+			fn(e)
+		}
 	}
-	return size
 }
 
-// Subscribe registers a new subscriber.
-func (b *InMemoryBus) Subscribe(opts SubscribeOptions) (*Subscription, error) {
+// Dump writes all events as JSON to w.
+// It does not affect subscribers.
+func (b *Bus) Dump(w io.Writer) error {
+	var events []Event
+	b.ForEachEvent("", func(e Event) {
+		events = append(events, e)
+	})
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(events)
+}
+
+// Load reads events as JSON from r and replaces the current log.
+// It does not notify subscribers.
+func (b *Bus) Load(r io.Reader) error {
+	var events []Event
+	if err := json.NewDecoder(r).Decode(&events); err != nil {
+		return err
+	}
+
+	eventsCopy := make([]Event, len(events))
+	copy(eventsCopy, events)
+
+	b.mu.Lock()
+	b.events = eventsCopy
+	b.mu.Unlock()
+
+	return nil
+}
+
+// Subscribe registers a new subscriber for a topic.
+// If topic is empty, the subscriber receives all events.
+// If the channel buffer is full, events are dropped for that subscriber.
+func (b *Bus) Subscribe(topic string, bufferSize int) (*Subscription, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	sub := &subscriber{
-		topic: opts.Topic,
-		ch:    make(chan Event, bufferSizeOrDefault(opts.BufferSize)),
+	if bufferSize <= 0 {
+		bufferSize = 1024
 	}
 
-	if b.subscribers == nil {
-		b.subscribers = make(map[*subscriber]struct{})
+	sub := &subscriber{
+		topic: topic,
+		ch:    make(chan Event, bufferSize),
 	}
+
 	b.subscribers[sub] = struct{}{}
 
 	subscription := &Subscription{
@@ -144,15 +133,11 @@ func (b *InMemoryBus) Subscribe(opts SubscribeOptions) (*Subscription, error) {
 	return subscription, nil
 }
 
-// Publish appends the event to the store and fans it out to subscribers.
+// Publish appends the event to the log and fans it out to subscribers.
 // If a subscriber's channel is full, the event is dropped for that subscriber.
-func (b *InMemoryBus) Publish(ctx context.Context, e Event) error {
-	if _, err := b.store.Append(e); err != nil {
-		return err
-	}
-
+func (b *Bus) Publish(ctx context.Context, e Event) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.events = append(b.events, e)
 
 	for sub := range b.subscribers {
 		if sub.topic == "" || sub.topic == e.Topic {
@@ -164,33 +149,39 @@ func (b *InMemoryBus) Publish(ctx context.Context, e Event) error {
 		}
 	}
 
+	b.mu.Unlock()
 	return nil
 }
 
-// SaveToFile writes all events in the store to a JSON file.
-func SaveToFile(store EventStore, path string) error {
-	events := store.All()
+// Helper functions for file-based usage (optional, but handy).
 
-	data, err := json.MarshalIndent(events, "", "  ")
+// NewFromFile creates a new Bus and loads events from the given JSON file.
+// If the file does not exist, it returns an empty bus and nil error.
+func NewFromFile(path string) (*Bus, error) {
+	b := New()
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return b, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	if err := b.Load(f); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// SaveToFile dumps all events to the given path, overwriting the file if it exists.
+func (b *Bus) SaveToFile(path string) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	return os.WriteFile(path, data, 0o644)
+	return b.Dump(f)
 }
-
-// LoadFromFile reads events from a JSON file created by SaveToFile.
-func LoadFromFile(path string) ([]Event, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var events []Event
-	if err := json.Unmarshal(data, &events); err != nil {
-		return nil, err
-	}
-
-	return events, nil
-}
-

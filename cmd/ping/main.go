@@ -13,32 +13,24 @@ import (
 )
 
 func main() {
-	// Load previous events from disk, if any.
-	events, err := eventbus.LoadFromFile("events.json")
-	if err != nil && !os.IsNotExist(err) {
+	// Create a bus, optionally loading events from disk if the file exists.
+	bus, err := eventbus.NewFromFile("events.json")
+	if err != nil {
 		log.Printf("failed to load events.json: %v", err)
-	} else if err == nil {
-		log.Printf("loaded %d events from events.json", len(events))
+		bus = eventbus.New()
+	} else {
+		log.Printf("bus initialized from events.json")
 	}
-
-	// Create the bus with preloaded events.
-	bus := eventbus.NewBus(events)
 
 	// Single subscriber that logs all events.
 	startLoggingSubscriber(bus)
 
 	// /ping publishes a PingReceived event.
 	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		ev := eventbus.Event{
-			ID:        time.Now().Format(time.RFC3339Nano),
-			Timestamp: time.Now().UTC(),
-			Topic:     "ping",
-			Type:      "PingReceived",
-			Payload: map[string]any{
-				"path":   r.URL.Path,
-				"method": r.Method,
-			},
-		}
+		ev := eventbus.NewEvent("ping", "PingReceived", map[string]any{
+			"path":   r.URL.Path,
+			"method": r.Method,
+		})
 
 		if err := bus.Publish(r.Context(), ev); err != nil {
 			log.Printf("failed to publish ping event: %v", err)
@@ -76,7 +68,7 @@ func main() {
 	}
 
 	// Save all events to file.
-	if err := eventbus.SaveToFile(bus.Events(), "events.json"); err != nil {
+	if err := bus.SaveToFile("events.json"); err != nil {
 		log.Printf("failed to save events: %v", err)
 	} else {
 		log.Printf("events saved to events.json")
@@ -86,11 +78,8 @@ func main() {
 }
 
 // startLoggingSubscriber subscribes to all events and logs them.
-func startLoggingSubscriber(bus eventbus.Bus) {
-	sub, err := bus.Subscribe(eventbus.SubscribeOptions{
-		Topic:      "",  // all topics
-		BufferSize: 256, // arbitrary buffer size
-	})
+func startLoggingSubscriber(bus *eventbus.Bus) {
+	sub, err := bus.Subscribe("", 256) // all topics, arbitrary buffer size
 	if err != nil {
 		log.Printf("failed to subscribe logger: %v", err)
 		return
@@ -98,8 +87,8 @@ func startLoggingSubscriber(bus eventbus.Bus) {
 
 	go func() {
 		for e := range sub.C {
-			log.Printf("[EVENT] topic=%s type=%s id=%s payload=%v",
-				e.Topic, e.Type, e.ID, e.Payload)
+			log.Printf("[EVENT] topic=%s type=%s payload=%v",
+				e.Topic, e.Type, e.Payload)
 		}
 	}()
 }
