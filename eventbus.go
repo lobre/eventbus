@@ -153,8 +153,6 @@ func (b *Bus) Publish(ctx context.Context, e Event) error {
 	return nil
 }
 
-// Helper functions for file-based usage (optional, but handy).
-
 // NewFromFile creates a new Bus and loads events from the given JSON file.
 // If the file does not exist, it returns an empty bus and nil error.
 func NewFromFile(path string) (*Bus, error) {

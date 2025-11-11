@@ -24,18 +24,21 @@ This library is **not** production-ready: it has no distribution, no durability 
   - Larger buffers (e.g. 256 or 1024) are better for logging, debugging, or projections where you want to tolerate bursts and see more of the event stream.
 
 - **Full-log iteration for projections**  
-  `ForEachEvent(topic, fn)` iterates over the entire event log (optionally filtered by topic) and calls `fn` for each event.  
+  `ForEachEvent(topic, fn)` iterates over the entire event log (optionally filtered by topic) and calls `fn` for each event.
+
   This is enough to implement simple projection systems, such as:
   - building in-memory read models, or
   - populating SQL tables optimized for queries, using events as the source of truth and projections as derived state.
 
 - **JSON dump/load via io.Writer/io.Reader**  
   - `Dump(w io.Writer)` writes all events as pretty-printed JSON.
-  - `Load(r io.Reader)` replaces the entire log from JSON.  
+  - `Load(r io.Reader)` replaces the entire log from JSON.
+
   Because these use `io.Writer` / `io.Reader`, you can:
   - save regular snapshots to files,
   - push backups to a GitHub gist or object storage,
-  - or stream logs over HTTP.  
+  - or stream logs over HTTP.
+
   You can trigger dumps on a timer or after every N events from within a subscriber to get simple, ongoing backup behavior.
 
 - **Small, single-file implementation**  
