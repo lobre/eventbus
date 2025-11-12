@@ -1,68 +1,40 @@
 # eventbus
 
-A minimal in-memory event bus for Go, intended as a playground for CQRS and event-sourcing patterns.
+A single-file in-memory event bus for Go, intended as a playground for CQRS and event-sourcing ideas.
 
-This library is **not** production-ready: it has no distribution, no durability guarantees beyond simple JSON dumps, and no scalability story. It is, however, very handy for small apps, demos, and experiments.
+The implementation favors a tiny API surface — append, iterate, subscribe, dump, and load — while being thread-safe. Everything else (replay helpers, sinks, projections) is shown in `examples/`.
+
+This library is **not** production-ready. It has no distribution or durability story beyond JSON snapshots, but it’s great for experiments and demos.
 
 ## Features
 
-- **In-memory event log**  
-  The bus keeps an append-only slice of `Event` values in memory. This is your “event store” for replaying history or building projections.
+- **Publish + subscribe (examples/basic)**  
+  `Publish(event)` appends to the log and fans the event out to every `Subscribe(topic, bufferSize)` consumer using Go channels. `Event` instances are created with `NewEvent(topic, type, payload)` and contain `Timestamp`, `Topic`, `Type`, and `Payload`.
 
-- **Simple event type**  
-  `Event` has `Timestamp`, `Topic`, `Type`, and `Payload`.
+- **Buffer tuning (examples/buffer)**  
+  Each subscription owns its buffered channel. Small buffers coalesce bursts (“state changed” signals) while larger buffers tolerate spiky traffic. When the buffer is full the publisher drops the event for that subscriber instead of blocking.
 
-  Use `NewEvent(topic, type, payload)` to create events with an automatic UTC timestamp, keeping event creation boilerplate low.
+- **Checkpoint-friendly projections (examples/projection)**  
+  `ForEachEvent(topic, fn)` iterates a snapshot of the log. Keep a counter of how many events you’ve already applied per topic, skip that many on the next replay, and resume without revisiting old events.
 
-- **Pub/sub via Go channels**  
-  `Subscribe(topic, bufferSize)` returns a `Subscription` with a `chan Event`.
+- **Replay then stay live (examples/replay)**  
+  Combine `ForEachEvent` (for history) with a fresh `Subscribe` (for new events) to rebuild projections and keep them hot without needing extra APIs.
 
-  Because you get a real channel, you can use `select` to combine events with context cancellation, timers, other channels, etc. This makes it easy to plug the bus into HTTP handlers, background workers, SSE streams, and so on.
+- **JSON persistence (examples/persist)**  
+  `Dump(io.Writer)` / `Load(io.Reader)` and the convenience helpers `SaveToFile` / `NewFromFile` make it easy to snapshot or restore the log for demos, backups, or hand-edited fixtures.
 
-- **Configurable buffer size with drop-if-full semantics**  
-  Each subscription has its own buffered channel. When the buffer is full, new events for that subscriber are dropped (publishers never block).
+- **Global sinks (examples/sink)**  
+  Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere — for instance append them to a log file for durability — while keeping the bus core unchanged.
 
-  The buffer size acts as a behavior knob:
-  - `bufferSize = 1` works well for “refresh” or “state changed” signals where you only care that *something* changed; bursts of such events effectively coalesce into at most one pending event.
-  - Larger buffers (e.g. 256 or 1024) are better for logging, debugging, or projections where you want to tolerate bursts and see more of the event stream.
+- **CQRS loop (examples/cqrs)**  
+  Commands mutate aggregates by publishing events, while projections rebuild state using `ForEachEvent` at startup and a live subscription afterward. The example wires an account command handler and balance projection without extra APIs.
 
-- **Full-log iteration for projections**  
-  `ForEachEvent(topic, fn)` iterates over the entire event log (optionally filtered by topic) and calls `fn` for each event.
+## Running the examples
 
-  This is enough to implement simple projection systems, such as:
-  - building in-memory read models, or
-  - populating SQL tables optimized for queries, using events as the source of truth and projections as derived state.
-
-- **JSON dump/load via io.Writer/io.Reader**  
-  - `Dump(w io.Writer)` writes all events as pretty-printed JSON.
-  - `Load(r io.Reader)` replaces the entire log from JSON.
-
-  Because these use `io.Writer` / `io.Reader`, you can:
-  - save regular snapshots to files,
-  - push backups to a GitHub gist or object storage,
-  - or stream logs over HTTP.
-
-  You can trigger dumps on a timer or after every N events from within a subscriber to get simple, ongoing backup behavior.
-
-- **Small, single-file implementation**  
-  The entire library lives in `eventbus.go` and is easy to copy into other projects.
-
-## Example
-
-There is a minimal example command under `cmd/ping/main.go` that:
-
-- creates a bus (optionally loading from `events.json`),
-- starts a subscriber that logs all events,
-- exposes an HTTP endpoint that publishes events.
-
-To build and run it from the project root:
+Each directory under `examples/` is a standalone `go run` program. For instance:
 
 ```bash
-go build -o ping ./cmd/ping
-
-./ping
-
-curl "http://localhost:8080/ping"
+go run ./examples/basic
 ```
 
-You’ll see the events logged in your terminal.
+Pick the example that matches the pattern you want to explore.

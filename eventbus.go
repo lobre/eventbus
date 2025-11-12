@@ -1,7 +1,6 @@
 package eventbus
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -57,11 +56,10 @@ func New() *Bus {
 // If topic is non-empty, only events with that topic are processed.
 func (b *Bus) ForEachEvent(topic string, fn func(Event)) {
 	b.mu.Lock()
-	eventsCopy := make([]Event, len(b.events))
-	copy(eventsCopy, b.events)
+	events := append([]Event(nil), b.events...)
 	b.mu.Unlock()
 
-	for _, e := range eventsCopy {
+	for _, e := range events {
 		if topic == "" || e.Topic == topic {
 			fn(e)
 		}
@@ -71,10 +69,9 @@ func (b *Bus) ForEachEvent(topic string, fn func(Event)) {
 // Dump writes all events as JSON to w.
 // It does not affect subscribers.
 func (b *Bus) Dump(w io.Writer) error {
-	var events []Event
-	b.ForEachEvent("", func(e Event) {
-		events = append(events, e)
-	})
+	b.mu.Lock()
+	events := append([]Event(nil), b.events...)
+	b.mu.Unlock()
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -89,11 +86,8 @@ func (b *Bus) Load(r io.Reader) error {
 		return err
 	}
 
-	eventsCopy := make([]Event, len(events))
-	copy(eventsCopy, events)
-
 	b.mu.Lock()
-	b.events = eventsCopy
+	b.events = append([]Event(nil), events...)
 	b.mu.Unlock()
 
 	return nil
@@ -103,53 +97,56 @@ func (b *Bus) Load(r io.Reader) error {
 // If topic is empty, the subscriber receives all events.
 // If the channel buffer is full, events are dropped for that subscriber.
 func (b *Bus) Subscribe(topic string, bufferSize int) (*Subscription, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if bufferSize <= 0 {
 		bufferSize = 1024
 	}
-
 	sub := &subscriber{
 		topic: topic,
 		ch:    make(chan Event, bufferSize),
 	}
 
+	b.mu.Lock()
 	b.subscribers[sub] = struct{}{}
+	b.mu.Unlock()
 
-	subscription := &Subscription{
+	return &Subscription{
 		C: sub.ch,
 		Close: func() {
+			var ch chan Event
 			b.mu.Lock()
-			defer b.mu.Unlock()
-
 			if _, ok := b.subscribers[sub]; ok {
 				delete(b.subscribers, sub)
-				close(sub.ch)
+				ch = sub.ch
+			}
+			b.mu.Unlock()
+
+			if ch != nil {
+				close(ch)
 			}
 		},
-	}
-
-	return subscription, nil
+	}, nil
 }
 
 // Publish appends the event to the log and fans it out to subscribers.
 // If a subscriber's channel is full, the event is dropped for that subscriber.
-func (b *Bus) Publish(ctx context.Context, e Event) error {
+func (b *Bus) Publish(e Event) error {
 	b.mu.Lock()
 	b.events = append(b.events, e)
 
 	for sub := range b.subscribers {
-		if sub.topic == "" || sub.topic == e.Topic {
-			select {
-			case sub.ch <- e:
-			default:
-				// buffer full: drop for this subscriber
-			}
+		if sub.topic != "" && sub.topic != e.Topic {
+			continue
+		}
+
+		select {
+		case sub.ch <- e:
+		default:
+			// buffer full: drop for this subscriber
 		}
 	}
 
 	b.mu.Unlock()
+
 	return nil
 }
 
