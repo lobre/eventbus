@@ -2,44 +2,56 @@ package main
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/lobre/eventbus"
 )
 
 func main() {
 	bus := eventbus.New()
+	ledger := &orderLedger{}
 
-	_ = bus.Publish(eventbus.NewEvent("payments", "Received", map[string]int{"amount": 5}))
-	_ = bus.Publish(eventbus.NewEvent("payments", "Received", map[string]int{"amount": 7}))
+	sub, err := bus.Subscribe("orders", 32)
+	if err != nil {
+		panic(err)
+	}
+	defer sub.Close()
 
-	cp := checkpoint{}
-	cp = replayPayments(bus, cp)
-	fmt.Printf("initial total=%d processed=%d\n", cp.amount, cp.processed)
+	go ledger.consume(sub.C)
 
-	_ = bus.Publish(eventbus.NewEvent("payments", "Received", map[string]int{"amount": 10}))
+	_ = bus.Publish(eventbus.NewEvent("orders", "Placed", map[string]string{"id": "A1", "user": "alice"}))
+	_ = bus.Publish(eventbus.NewEvent("orders", "Placed", map[string]string{"id": "B2", "user": "bob"}))
+	_ = bus.Publish(eventbus.NewEvent("orders", "Placed", map[string]string{"id": "C3", "user": "alice"}))
 
-	cp = replayPayments(bus, cp)
-	fmt.Printf("after catch-up total=%d processed=%d\n", cp.amount, cp.processed)
+	time.Sleep(50 * time.Millisecond)
+
+	fmt.Printf("orders per user: %v\n", ledger.snapshot())
 }
 
-type checkpoint struct {
-	amount    int
-	processed int
+type orderLedger struct {
+	mu     sync.Mutex
+	counts map[string]int
 }
 
-func replayPayments(bus *eventbus.Bus, from checkpoint) checkpoint {
-	result := from
-	seen := 0
-
-	bus.ForEachEvent("payments", func(e eventbus.Event) {
-		seen++
-		if seen <= from.processed {
-			return
+func (l *orderLedger) consume(ch <-chan eventbus.Event) {
+	for e := range ch {
+		payload := e.Payload.(map[string]string)
+		l.mu.Lock()
+		if l.counts == nil {
+			l.counts = make(map[string]int)
 		}
-		payload := e.Payload.(map[string]int)
-		result.amount += payload["amount"]
-		result.processed = seen
-	})
+		l.counts[payload["user"]]++
+		l.mu.Unlock()
+	}
+}
 
-	return result
+func (l *orderLedger) snapshot() map[string]int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	copy := make(map[string]int, len(l.counts))
+	for k, v := range l.counts {
+		copy[k] = v
+	}
+	return copy
 }

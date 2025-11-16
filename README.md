@@ -1,40 +1,47 @@
 # eventbus
 
-A single-file in-memory event bus for Go, intended as a playground for CQRS and event-sourcing ideas.
+eventbus is a single Go file that keeps an in-memory event log and lets you experiment with CQRS and event sourcing without setting up infrastructure. It has just enough features to publish events, subscribe to them, iterate the log, and dump/load snapshots. Everything else lives in the examples.
 
-The implementation favors a tiny API surface — append, iterate, subscribe, dump, and load — while being thread-safe. Everything else (replay helpers, sinks, projections) is shown in `examples/`.
+This is a demo library. It is not designed for production: events are only stored in memory unless you call `Dump`, and there is no clustering or durability story.
 
-This library is **not** production-ready. It has no distribution or durability story beyond JSON snapshots, but it’s great for experiments and demos.
+## Basic publish/subscribe (`examples/basic`)
 
-## Features
+`Publish` appends a Go value to the log and delivers it over channels. `Subscribe(topic, bufferSize)` hands back a receive-only channel plus a `Close` function. `NewEvent` stamps timestamps and numeric IDs so you don’t repeat boilerplate. This is the core API.
 
-- **Publish + subscribe (examples/basic)**  
-  `Publish(event)` appends to the log and fans the event out to every `Subscribe(topic, bufferSize)` consumer using Go channels. `Event` instances are created with `NewEvent(topic, type, payload)` and contain `Timestamp`, `Topic`, `Type`, and `Payload`.
+## Buffer tuning (`examples/buffer`)
 
-- **Buffer tuning (examples/buffer)**  
-  Each subscription owns its buffered channel. Small buffers coalesce bursts (“state changed” signals) while larger buffers tolerate spiky traffic. When the buffer is full the publisher drops the event for that subscriber instead of blocking.
+Each subscriber owns its buffer. A size of `1` keeps only the newest value (“state changed”), while larger buffers collect bursts. Publishers never block: when a subscriber’s buffer fills, new events for that subscriber are dropped. The example shows how different sizes behave.
 
-- **Checkpoint-friendly projections (examples/projection)**  
-  `ForEachEvent(topic, fn)` iterates a snapshot of the log. Keep a counter of how many events you’ve already applied per topic, skip that many on the next replay, and resume without revisiting old events.
+## Live projections (`examples/projection`)
 
-- **Replay then stay live (examples/replay)**  
-  Combine `ForEachEvent` (for history) with a fresh `Subscribe` (for new events) to rebuild projections and keep them hot without needing extra APIs.
+You can hold derived state in memory by subscribing to the topic you care about and updating a struct whenever events arrive. Starting the subscription early ensures you see every event; if you restart later, you can use `SubscribeFromID` to catch up. The example counts orders per user.
 
-- **JSON persistence (examples/persist)**  
-  `Dump(io.Writer)` / `Load(io.Reader)` and the convenience helpers `SaveToFile` / `NewFromFile` make it easy to snapshot or restore the log for demos, backups, or hand-edited fixtures.
+## Offline log scans (`examples/report`)
 
-- **Global sinks (examples/sink)**  
-  Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere — for instance append them to a log file for durability — while keeping the bus core unchanged.
+`ForEachEvent(topic, fn)` copies the log and calls `fn` for each event. This fits ad-hoc queries where you just want to walk the log once and exit. The example totals expenses tagged as “food”.
 
-- **CQRS loop (examples/cqrs)**  
-  Commands mutate aggregates by publishing events, while projections rebuild state using `ForEachEvent` at startup and a live subscription afterward. The example wires an account command handler and balance projection without extra APIs.
+## Persistence helpers (`examples/persist`)
+
+`Dump`/`Load` work with `io.Writer` and `io.Reader` so you can snapshot or restore wherever you like. `SaveToFile` and `NewFromFile` are thin wrappers that target plain files.
+
+## Audit log sink (`examples/auditlog`)
+
+Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere; the example appends each event to a file, acting as a simple audit log.
+
+## Server-sent events (`examples/sse`)
+
+`SubscribeFromID(topic, buffer, lastID)` streams events newer than `lastID` and then keeps going. This lines up with SSE’s `Last-Event-ID` header: read the header, pass it to the bus, and write the unified stream back to the client.
+
+## CQRS loop (`examples/cqrs`)
+
+Commands append events, projections rebuild state, and queries read from the projection. The example stitches those parts together into a small CQRS pipeline.
 
 ## Running the examples
 
-Each directory under `examples/` is a standalone `go run` program. For instance:
+Each directory under `examples/` is a standalone `go run` program. For example:
 
 ```bash
 go run ./examples/basic
 ```
 
-Pick the example that matches the pattern you want to explore.
+Pick the example that matches what you want to explore.
