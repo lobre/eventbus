@@ -6,15 +6,15 @@ This is a demo library. It is not designed for production: events are only store
 
 ## Basic publish/subscribe (`examples/basic`)
 
-`Publish` appends a Go value to the log and delivers it over channels. `Subscribe(topic, bufferSize)` hands back a receive-only channel plus a `Close` function. `NewEvent` stamps timestamps and numeric IDs so you don’t repeat boilerplate. This is the core API.
+`Publish` appends a Go value to the log and delivers it over channels. `Subscribe(topic, opts...)` hands back a receive-only channel plus a `Close` function. Pass options such as `eventbus.WithBufferSize(8)` or `eventbus.WithFromID(42)` when you need them; omit options to get the default buffer (1024) and no replay. `NewEvent` stamps timestamps and numeric IDs so you don’t repeat boilerplate. This is the core API.
 
 ## Buffer tuning (`examples/buffer`)
 
-Each subscriber owns its buffer. A size of `1` keeps only the newest value (“state changed”), while larger buffers collect bursts. Publishers never block: when a subscriber’s buffer fills, new events for that subscriber are dropped. The example shows how different sizes behave.
+Each subscriber owns its buffer. A size of `1` keeps only the newest value (“state changed”), while larger buffers collect bursts. Publishers never block: when a subscriber’s buffer fills, new events for that subscriber are dropped. Use `eventbus.WithBufferSize(n)` to override the default; the example shows how different sizes behave.
 
 ## Live projections (`examples/projection`)
 
-You can hold derived state in memory by subscribing to the topic you care about and updating a struct whenever events arrive. Starting the subscription early ensures you see every event; if you restart later, you can use `SubscribeFromID` to catch up. The example counts orders per user.
+You can hold derived state in memory by subscribing to the topic you care about and updating a struct whenever events arrive. Start the subscription early so you see every event; if you restart later, add `eventbus.WithFromID(lastID)` to catch up. The example counts orders per user.
 
 ## Offline log scans (`examples/report`)
 
@@ -24,13 +24,13 @@ You can hold derived state in memory by subscribing to the topic you care about 
 
 `Dump`/`Load` work with `io.Writer` and `io.Reader` so you can snapshot or restore wherever you like. `SaveToFile` and `NewFromFile` are thin wrappers that target plain files.
 
-## Audit log sink (`examples/auditlog`)
+## Sink (`examples/sink`)
 
 Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere; the example appends each event to a file, acting as a simple audit log.
 
 ## Server-sent events (`examples/sse`)
 
-`SubscribeFromID(topic, buffer, lastID)` streams events newer than `lastID` and then keeps going. This lines up with SSE’s `Last-Event-ID` header: read the header, pass it to the bus, and write the unified stream back to the client.
+`Subscribe(topic, eventbus.WithFromID(lastID))` streams events newer than `lastID` and then keeps going. This lines up with SSE’s `Last-Event-ID` header: read the header, pass it to the bus, and write the unified stream back to the client.
 
 ## CQRS loop (`examples/cqrs`)
 

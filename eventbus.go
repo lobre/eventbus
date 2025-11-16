@@ -38,6 +38,35 @@ type subscriber struct {
 	ch    chan Event
 }
 
+const defaultBufferSize = 1024
+
+type subscribeConfig struct {
+	bufferSize int
+	fromID     *uint64
+}
+
+// SubscribeOption configures Subscribe behavior.
+type SubscribeOption func(*subscribeConfig)
+
+// WithBufferSize sets the channel buffer size (defaults to 1024).
+// When the buffer is full, new events for that subscriber are dropped.
+func WithBufferSize(size int) SubscribeOption {
+	return func(cfg *subscribeConfig) {
+		if size <= 0 {
+			cfg.bufferSize = defaultBufferSize
+		} else {
+			cfg.bufferSize = size
+		}
+	}
+}
+
+// WithFromID replays events with ID greater than id before delivering live ones.
+func WithFromID(id uint64) SubscribeOption {
+	return func(cfg *subscribeConfig) {
+		cfg.fromID = &id
+	}
+}
+
 // Bus is an in-memory pub/sub bus with an append-only event log.
 type Bus struct {
 	mu          sync.Mutex
@@ -103,33 +132,25 @@ func (b *Bus) Load(r io.Reader) error {
 
 // Subscribe registers a new subscriber for a topic.
 // If topic is empty, the subscriber receives all events.
-// If the channel buffer is full, events are dropped for that subscriber.
-func (b *Bus) Subscribe(topic string, bufferSize int) (*Subscription, error) {
-	return b.subscribeFromID(topic, bufferSize, nil)
-}
-
-// SubscribeFromID replays events with ID greater than fromID, then delivers live events.
-// Pass 0 to replay the entire history, or omit the parameter via Subscribe for live-only.
-func (b *Bus) SubscribeFromID(topic string, bufferSize int, fromID uint64) (*Subscription, error) {
-	return b.subscribeFromID(topic, bufferSize, &fromID)
-}
-
-func (b *Bus) subscribeFromID(topic string, bufferSize int, fromID *uint64) (*Subscription, error) {
-	if bufferSize <= 0 {
-		bufferSize = 1024
+func (b *Bus) Subscribe(topic string, opts ...SubscribeOption) (*Subscription, error) {
+	cfg := subscribeConfig{
+		bufferSize: defaultBufferSize,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	sub := &subscriber{
 		topic: topic,
-		ch:    make(chan Event, bufferSize),
+		ch:    make(chan Event, cfg.bufferSize),
 	}
 
 	var history []Event
 
 	b.mu.Lock()
-	if fromID != nil {
+	if cfg.fromID != nil {
 		history = make([]Event, 0, len(b.events))
 		for _, e := range b.events {
-			if (topic == "" || e.Topic == topic) && e.ID > *fromID {
+			if (topic == "" || e.Topic == topic) && e.ID > *cfg.fromID {
 				history = append(history, e)
 			}
 		}
@@ -154,7 +175,7 @@ func (b *Bus) subscribeFromID(topic string, bufferSize int, fromID *uint64) (*Su
 		},
 	}
 
-	if fromID != nil && len(history) > 0 {
+	if cfg.fromID != nil && len(history) > 0 {
 		go func(events []Event, ch chan Event) {
 			for _, e := range events {
 				select {

@@ -20,7 +20,7 @@ func main() {
 	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		lastID := parseLastEventID(r.Header.Get("Last-Event-ID"))
 
-		sub, err := bus.SubscribeFromID("notifications", 32, lastID)
+		sub, err := bus.Subscribe("notifications", eventbus.WithFromID(lastID))
 		if err != nil {
 			http.Error(w, "subscribe failed", http.StatusInternalServerError)
 			return

@@ -10,7 +10,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	sub, err := bus.Subscribe("signals", 1)
+	sub, err := bus.Subscribe("signals", eventbus.WithBufferSize(1))
 	if err != nil {
 		panic(err)
 	}

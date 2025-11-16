@@ -12,7 +12,7 @@ func main() {
 	bus := eventbus.New()
 	ledger := &orderLedger{}
 
-	sub, err := bus.Subscribe("orders", 32)
+	sub, err := bus.Subscribe("orders")
 	if err != nil {
 		panic(err)
 	}

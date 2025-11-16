@@ -10,7 +10,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	sub, err := bus.Subscribe("chat", 8)
+	sub, err := bus.Subscribe("chat")
 	if err != nil {
 		panic(err)
 	}

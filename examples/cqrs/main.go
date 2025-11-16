@@ -15,7 +15,7 @@ func main() {
 	projection := &balanceProjection{}
 	bus.ForEachEvent(accountTopic, projection.Apply)
 
-	sub, err := bus.Subscribe(accountTopic, 32)
+	sub, err := bus.Subscribe(accountTopic)
 	if err != nil {
 		panic(err)
 	}

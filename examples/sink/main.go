@@ -14,7 +14,7 @@ func main() {
 
 	bus := eventbus.New()
 
-	sink, err := bus.Subscribe("", 32)
+	sink, err := bus.Subscribe("")
 	if err != nil {
 		panic(err)
 	}
