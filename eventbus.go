@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -17,17 +18,7 @@ type Event struct {
 	Payload   any       `json:"payload"`
 }
 
-// NewEvent builds an Event with the current UTC timestamp.
-func NewEvent(topic, typ string, payload any) Event {
-	return Event{
-		Timestamp: time.Now().UTC(),
-		Topic:     topic,
-		Type:      typ,
-		Payload:   payload,
-	}
-}
-
-// Subscription is used to receive events and stop listening.
+// Subscription exposes an events channel plus a Close function to stop delivery.
 type Subscription struct {
 	C     <-chan Event
 	Close func()
@@ -38,41 +29,16 @@ type subscriber struct {
 	ch    chan Event
 }
 
-const defaultBufferSize = 1024
+const BufferDefault = 1024
 
-type subscribeConfig struct {
-	bufferSize int
-	fromID     *uint64
-}
-
-// SubscribeOption configures Subscribe behavior.
-type SubscribeOption func(*subscribeConfig)
-
-// WithBufferSize sets the channel buffer size (defaults to 1024).
-// When the buffer is full, new events for that subscriber are dropped.
-func WithBufferSize(size int) SubscribeOption {
-	return func(cfg *subscribeConfig) {
-		if size <= 0 {
-			cfg.bufferSize = defaultBufferSize
-		} else {
-			cfg.bufferSize = size
-		}
-	}
-}
-
-// WithFromID replays events with ID greater than id before delivering live ones.
-func WithFromID(id uint64) SubscribeOption {
-	return func(cfg *subscribeConfig) {
-		cfg.fromID = &id
-	}
-}
+var ErrConflict = errors.New("eventbus: topic advanced")
 
 // Bus is an in-memory pub/sub bus with an append-only event log.
 type Bus struct {
 	mu          sync.Mutex
 	events      []Event
 	subscribers map[*subscriber]struct{}
-	nextID      uint64
+	lastID      uint64
 }
 
 // New creates a Bus with an empty event log.
@@ -80,22 +46,27 @@ func New() *Bus {
 	return &Bus{
 		events:      make([]Event, 0),
 		subscribers: make(map[*subscriber]struct{}),
-		nextID:      0,
+		lastID:      0,
 	}
 }
 
-// ForEachEvent calls fn for every event in the log.
+// ForEachEvent calls fn for every event in the log and returns the last ID visited.
 // If topic is non-empty, only events with that topic are processed.
-func (b *Bus) ForEachEvent(topic string, fn func(Event)) {
+func (b *Bus) ForEachEvent(topic string, fn func(Event)) uint64 {
 	b.mu.Lock()
 	events := append([]Event(nil), b.events...)
 	b.mu.Unlock()
 
+	var last uint64
+
 	for _, e := range events {
 		if topic == "" || e.Topic == topic {
 			fn(e)
+			last = e.ID
 		}
 	}
+
+	return last
 }
 
 // Dump writes all events as JSON to w.
@@ -121,38 +92,34 @@ func (b *Bus) Load(r io.Reader) error {
 	b.mu.Lock()
 	b.events = append([]Event(nil), events...)
 	if len(b.events) == 0 {
-		b.nextID = 0
+		b.lastID = 0
 	} else {
-		b.nextID = b.events[len(b.events)-1].ID + 1
+		b.lastID = b.events[len(b.events)-1].ID
 	}
 	b.mu.Unlock()
 
 	return nil
 }
 
-// Subscribe registers a new subscriber for a topic.
-// If topic is empty, the subscriber receives all events.
-func (b *Bus) Subscribe(topic string, opts ...SubscribeOption) (*Subscription, error) {
-	cfg := subscribeConfig{
-		bufferSize: defaultBufferSize,
-	}
-	for _, opt := range opts {
-		opt(&cfg)
+// Subscribe registers a new subscriber for a topic. fromID controls the replay window:
+// events with ID greater than fromID are replayed before live delivery begins.
+// bufferSize configures the subscriber's channel capacity.
+func (b *Bus) Subscribe(topic string, fromID uint64, bufferSize int) (*Subscription, error) {
+	if bufferSize <= 0 {
+		bufferSize = BufferDefault
 	}
 	sub := &subscriber{
 		topic: topic,
-		ch:    make(chan Event, cfg.bufferSize),
+		ch:    make(chan Event, bufferSize),
 	}
 
 	var history []Event
 
 	b.mu.Lock()
-	if cfg.fromID != nil {
-		history = make([]Event, 0, len(b.events))
-		for _, e := range b.events {
-			if (topic == "" || e.Topic == topic) && e.ID > *cfg.fromID {
-				history = append(history, e)
-			}
+	history = make([]Event, 0, len(b.events))
+	for _, e := range b.events {
+		if (topic == "" || e.Topic == topic) && e.ID > fromID {
+			history = append(history, e)
 		}
 	}
 	b.subscribers[sub] = struct{}{}
@@ -175,7 +142,7 @@ func (b *Bus) Subscribe(topic string, opts ...SubscribeOption) (*Subscription, e
 		},
 	}
 
-	if cfg.fromID != nil && len(history) > 0 {
+	if len(history) > 0 {
 		go func(events []Event, ch chan Event) {
 			for _, e := range events {
 				select {
@@ -190,13 +157,33 @@ func (b *Bus) Subscribe(topic string, opts ...SubscribeOption) (*Subscription, e
 	return subscription, nil
 }
 
-// Publish appends the event to the log and fans it out to subscribers.
-// If a subscriber's channel is full, the event is dropped for that subscriber.
-func (b *Bus) Publish(e Event) error {
-	b.mu.Lock()
-	e.ID = b.nextID
-	b.nextID++
+// Publish appends a new event if topic has not advanced beyond afterID.
+// topic/eventType/payload describe the event, afterID is the last known ID for that topic.
+// If another event with the same topic was added after afterID, ErrConflict is returned.
+// Subscribers drop events when their channel buffer is full.
+// Returns the ID assigned to the appended event on success.
+func (b *Bus) Publish(topic, eventType string, afterID uint64, payload any) (uint64, error) {
+	e := Event{
+		Topic:     topic,
+		Type:      eventType,
+		Payload:   payload,
+		Timestamp: time.Now().UTC(),
+	}
 
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i := len(b.events) - 1; i >= 0; i-- {
+		if b.events[i].Topic == topic {
+			if b.events[i].ID > afterID {
+				return 0, ErrConflict
+			}
+			break
+		}
+	}
+
+	b.lastID++
+	e.ID = b.lastID
 	b.events = append(b.events, e)
 
 	for sub := range b.subscribers {
@@ -211,9 +198,13 @@ func (b *Bus) Publish(e Event) error {
 		}
 	}
 
-	b.mu.Unlock()
+	return e.ID, nil
+}
 
-	return nil
+func (b *Bus) LastID() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastID
 }
 
 // NewFromFile creates a new Bus and loads events from the given JSON file.

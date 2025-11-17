@@ -12,7 +12,7 @@ func main() {
 	defer os.Remove(path)
 
 	bus := eventbus.New()
-	_ = bus.Publish(eventbus.NewEvent("inventory", "Added", map[string]int{"qty": 3}))
+	bus.Publish("inventory", "Added", 0, map[string]int{"qty": 3})
 
 	if err := bus.SaveToFile(path); err != nil {
 		panic(err)

@@ -12,17 +12,15 @@ func main() {
 	bus := eventbus.New()
 	ledger := &orderLedger{}
 
-	sub, err := bus.Subscribe("orders")
-	if err != nil {
-		panic(err)
-	}
+	sub, _ := bus.Subscribe("orders", 0, eventbus.BufferDefault)
 	defer sub.Close()
 
 	go ledger.consume(sub.C)
 
-	_ = bus.Publish(eventbus.NewEvent("orders", "Placed", map[string]string{"id": "A1", "user": "alice"}))
-	_ = bus.Publish(eventbus.NewEvent("orders", "Placed", map[string]string{"id": "B2", "user": "bob"}))
-	_ = bus.Publish(eventbus.NewEvent("orders", "Placed", map[string]string{"id": "C3", "user": "alice"}))
+	var last uint64
+	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "A1", "user": "alice"})
+	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "B2", "user": "bob"})
+	bus.Publish("orders", "Placed", last, map[string]string{"id": "C3", "user": "alice"})
 
 	time.Sleep(50 * time.Millisecond)
 

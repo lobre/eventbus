@@ -10,10 +10,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	sub, err := bus.Subscribe("signals", eventbus.WithBufferSize(1))
-	if err != nil {
-		panic(err)
-	}
+	sub, _ := bus.Subscribe("signals", 0, 1)
 	defer sub.Close()
 
 	go func() {
@@ -23,9 +20,10 @@ func main() {
 		}
 	}()
 
+	var last uint64
 	for i := 0; i < 5; i++ {
 		payload := fmt.Sprintf("burst-%d", i)
-		_ = bus.Publish(eventbus.NewEvent("signals", "Burst", payload))
+		last, _ = bus.Publish("signals", "Burst", last, payload)
 	}
 
 	time.Sleep(300 * time.Millisecond)

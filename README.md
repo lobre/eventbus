@@ -6,19 +6,19 @@ This is a demo library. It is not designed for production: events are only store
 
 ## Basic publish/subscribe (`examples/basic`)
 
-`Publish` appends a Go value to the log and delivers it over channels. `Subscribe(topic, opts...)` hands back a receive-only channel plus a `Close` function. Pass options such as `eventbus.WithBufferSize(8)` or `eventbus.WithFromID(42)` when you need them; omit options to get the default buffer (1024) and no replay. `NewEvent` stamps timestamps and numeric IDs so you don’t repeat boilerplate. This is the core API.
+`Publish(topic, eventType, afterID, payload)` appends an event if no newer event exists for that topic. Pass `afterID = bus.LastID()` when you want “latest only”, or the `lastID` returned by `ForEachEvent` when you’ve just replayed history. `Subscribe(topic, fromID, bufferSize)` replays events with `ID > fromID` before streaming live ones, so both aggregates and read models always know where they stand. Use `eventbus.BufferDefault` when you don’t care about the exact buffer size.
 
 ## Buffer tuning (`examples/buffer`)
 
-Each subscriber owns its buffer. A size of `1` keeps only the newest value (“state changed”), while larger buffers collect bursts. Publishers never block: when a subscriber’s buffer fills, new events for that subscriber are dropped. Use `eventbus.WithBufferSize(n)` to override the default; the example shows how different sizes behave.
+Each subscriber owns its buffer. A size of `1` keeps only the newest value (“state changed”), while larger buffers collect bursts. Publishers never block: when a subscriber’s buffer fills, new events for that subscriber are dropped. The buffer example shows how changing the third `Subscribe` parameter affects behavior.
 
 ## Live projections (`examples/projection`)
 
-You can hold derived state in memory by subscribing to the topic you care about and updating a struct whenever events arrive. Start the subscription early so you see every event; if you restart later, add `eventbus.WithFromID(lastID)` to catch up. The example counts orders per user.
+Subscribe early and keep derived state (e.g., orders per user) in memory. Pass `fromID = 0` at startup to replay everything, or `fromID = bus.LastID()` if you only want live updates. The projection example demonstrates a long-lived read model fed by the subscription channel.
 
-## Offline log scans (`examples/report`)
+## Aggregates (`examples/aggregate`)
 
-`ForEachEvent(topic, fn)` copies the log and calls `fn` for each event. This fits ad-hoc queries where you just want to walk the log once and exit. The example totals expenses tagged as “food”.
+`ForEachEvent(topic, fn)` walks the current log and returns the ID of the last event processed. Aggregates use it to rebuild state, enforce business rules, and then call `Publish` with that ID to ensure no newer event slipped in. The aggregate example shows a basic command-side check before emitting a new event.
 
 ## Persistence helpers (`examples/persist`)
 
@@ -26,15 +26,15 @@ You can hold derived state in memory by subscribing to the topic you care about 
 
 ## Sink (`examples/sink`)
 
-Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere; the example appends each event to a file, acting as a simple audit log.
+Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere; the sink example appends each event to a file, acting as a simple audit log.
 
 ## Server-sent events (`examples/sse`)
 
-`Subscribe(topic, eventbus.WithFromID(lastID))` streams events newer than `lastID` and then keeps going. This lines up with SSE’s `Last-Event-ID` header: read the header, pass it to the bus, and write the unified stream back to the client.
+`Subscribe(topic, fromID, bufferSize)` aligns with SSE’s `Last-Event-ID`: read the header, pass it as `fromID`, and write each event with its ID so clients can reconnect without missing anything.
 
 ## CQRS loop (`examples/cqrs`)
 
-Commands append events, projections rebuild state, and queries read from the projection. The example stitches those parts together into a small CQRS pipeline.
+Commands append events (after rebuilding aggregates via `ForEachEvent`), projections rebuild state via subscriptions, and queries read from the projection. The example stitches those parts together into a small CQRS pipeline.
 
 ## Running the examples
 
