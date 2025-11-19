@@ -14,7 +14,7 @@ func main() {
 
 	bus := eventbus.New()
 
-	sink, _ := bus.Subscribe("", 0, eventbus.BufferDefault)
+	sink, _ := bus.Subscribe(eventbus.AllTopics, bus.Start(), eventbus.DefaultCap)
 	defer sink.Close()
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -32,7 +32,7 @@ func main() {
 		}
 	}()
 
-	var last uint64
+	last := bus.End()
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "X1"})
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "X2"})
 	bus.Publish("payments", "Accepted", last, map[string]string{"id": "P1"})

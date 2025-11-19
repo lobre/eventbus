@@ -12,12 +12,12 @@ func main() {
 	bus := eventbus.New()
 	ledger := &orderLedger{}
 
-	sub, _ := bus.Subscribe("orders", 0, eventbus.BufferDefault)
+	sub, _ := bus.Subscribe("orders", bus.Start(), eventbus.DefaultCap)
 	defer sub.Close()
 
 	go ledger.consume(sub.C)
 
-	var last uint64
+	last := bus.End()
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "A1", "user": "alice"})
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "B2", "user": "bob"})
 	bus.Publish("orders", "Placed", last, map[string]string{"id": "C3", "user": "alice"})

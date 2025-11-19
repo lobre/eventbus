@@ -5,13 +5,14 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
 
 // Event is the unit that gets stored and published.
 type Event struct {
-	ID        uint64    `json:"id"`
+	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
 	Topic     string    `json:"topic"`
 	Type      string    `json:"type"`
@@ -29,16 +30,24 @@ type subscriber struct {
 	ch    chan Event
 }
 
-const BufferDefault = 1024
+const (
+	// DefaultCap configures the recommended subscriber channel capacity.
+	DefaultCap = 1024
 
-var ErrConflict = errors.New("eventbus: topic advanced")
+	// AllTopics selects every topic when subscribing.
+	AllTopics = ""
+)
+
+var (
+	ErrConflict = errors.New("eventbus: topic advanced")
+	ErrNoTopic  = errors.New("eventbus: topic required")
+)
 
 // Bus is an in-memory pub/sub bus with an append-only event log.
 type Bus struct {
 	mu          sync.Mutex
 	events      []Event
 	subscribers map[*subscriber]struct{}
-	lastID      uint64
 }
 
 // New creates a Bus with an empty event log.
@@ -46,82 +55,109 @@ func New() *Bus {
 	return &Bus{
 		events:      make([]Event, 0),
 		subscribers: make(map[*subscriber]struct{}),
-		lastID:      0,
 	}
 }
 
-// ForEachEvent calls fn for every event in the log and returns the last ID visited.
-// If topic is non-empty, only events with that topic are processed.
-func (b *Bus) ForEachEvent(topic string, fn func(Event)) uint64 {
-	b.mu.Lock()
-	events := append([]Event(nil), b.events...)
-	b.mu.Unlock()
+// yieldID generates a new ID for the next event.
+// IDs look sequential for debuggability, but the values themselves are opaque
+// and could be replaced by any other unique identifier scheme.
+func (b *Bus) yieldID() string {
+	if len(b.events) == 0 {
+		return "1"
+	}
 
-	var last uint64
+	v, err := strconv.ParseUint(b.events[len(b.events)-1].ID, 10, 64)
+	if err != nil {
+		panic("eventbus: invalid id")
+	}
 
-	for _, e := range events {
-		if topic == "" || e.Topic == topic {
-			fn(e)
-			last = e.ID
+	return strconv.FormatUint(v+1, 10)
+}
+
+func (b *Bus) filter(q Query) []Event {
+	var since time.Time
+	if q.AfterID != "" {
+		if e := b.lookup(q.AfterID); e != nil {
+			since = e.Timestamp
 		}
 	}
 
-	return last
-}
-
-// Dump writes all events as JSON to w.
-// It does not affect subscribers.
-func (b *Bus) Dump(w io.Writer) error {
-	b.mu.Lock()
-	events := append([]Event(nil), b.events...)
-	b.mu.Unlock()
-
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(events)
-}
-
-// Load reads events as JSON from r and replaces the current log.
-// It does not notify subscribers.
-func (b *Bus) Load(r io.Reader) error {
-	var events []Event
-	if err := json.NewDecoder(r).Decode(&events); err != nil {
-		return err
+	events := make([]Event, 0, len(b.events))
+	for _, e := range b.events {
+		if q.Topic != "" && e.Topic != q.Topic {
+			continue
+		}
+		if q.Type != "" && e.Type != q.Type {
+			continue
+		}
+		if !q.Since.IsZero() && !e.Timestamp.After(q.Since) {
+			continue
+		}
+		if !q.Until.IsZero() && !e.Timestamp.Before(q.Until) {
+			continue
+		}
+		if !since.IsZero() && !e.Timestamp.After(since) {
+			continue
+		}
+		events = append(events, e)
 	}
 
-	b.mu.Lock()
-	b.events = append([]Event(nil), events...)
-	if len(b.events) == 0 {
-		b.lastID = 0
-	} else {
-		b.lastID = b.events[len(b.events)-1].ID
+	return events
+}
+
+// lookup searches by ID starting from the end because
+// recent events are more likely to be referenced.
+func (b *Bus) lookup(id string) *Event {
+	if id == "" {
+		return nil
 	}
-	b.mu.Unlock()
+
+	for i := len(b.events) - 1; i >= 0; i-- {
+		if b.events[i].ID == id {
+			e := b.events[i]
+			return &e
+		}
+	}
 
 	return nil
+}
+
+// Query configures how events are selected when calling Events.
+type Query struct {
+	Topic   string
+	Type    string
+	Since   time.Time
+	Until   time.Time
+	AfterID string
+}
+
+// ForEachEvent calls fn with each event that matches q.
+// Zero values in q disable their corresponding filters.
+func (b *Bus) ForEachEvent(q Query, fn func(Event)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, e := range b.filter(q) {
+		fn(e)
+	}
 }
 
 // Subscribe registers a new subscriber for a topic. fromID controls the replay window:
 // events with ID greater than fromID are replayed before live delivery begins.
 // bufferSize configures the subscriber's channel capacity.
-func (b *Bus) Subscribe(topic string, fromID uint64, bufferSize int) (*Subscription, error) {
+func (b *Bus) Subscribe(topic string, fromID string, bufferSize int) (*Subscription, error) {
 	if bufferSize <= 0 {
-		bufferSize = BufferDefault
+		bufferSize = DefaultCap
 	}
 	sub := &subscriber{
 		topic: topic,
 		ch:    make(chan Event, bufferSize),
 	}
 
-	var history []Event
-
 	b.mu.Lock()
-	history = make([]Event, 0, len(b.events))
-	for _, e := range b.events {
-		if (topic == "" || e.Topic == topic) && e.ID > fromID {
-			history = append(history, e)
-		}
-	}
+	history := b.filter(Query{
+		Topic:   topic,
+		AfterID: fromID,
+	})
 	b.subscribers[sub] = struct{}{}
 	b.mu.Unlock()
 
@@ -162,7 +198,11 @@ func (b *Bus) Subscribe(topic string, fromID uint64, bufferSize int) (*Subscript
 // If another event with the same topic was added after afterID, ErrConflict is returned.
 // Subscribers drop events when their channel buffer is full.
 // Returns the ID assigned to the appended event on success.
-func (b *Bus) Publish(topic, eventType string, afterID uint64, payload any) (uint64, error) {
+func (b *Bus) Publish(topic, eventType string, afterID string, payload any) (string, error) {
+	if topic == "" {
+		return "", ErrNoTopic
+	}
+
 	e := Event{
 		Topic:     topic,
 		Type:      eventType,
@@ -173,21 +213,15 @@ func (b *Bus) Publish(topic, eventType string, afterID uint64, payload any) (uin
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for i := len(b.events) - 1; i >= 0; i-- {
-		if b.events[i].Topic == topic {
-			if b.events[i].ID > afterID {
-				return 0, ErrConflict
-			}
-			break
-		}
+	if len(b.filter(Query{Topic: topic, AfterID: afterID})) > 0 {
+		return "", ErrConflict
 	}
 
-	b.lastID++
-	e.ID = b.lastID
+	e.ID = b.yieldID()
 	b.events = append(b.events, e)
 
 	for sub := range b.subscribers {
-		if sub.topic != "" && sub.topic != e.Topic {
+		if sub.topic != AllTopics && sub.topic != e.Topic {
 			continue
 		}
 
@@ -201,10 +235,47 @@ func (b *Bus) Publish(topic, eventType string, afterID uint64, payload any) (uin
 	return e.ID, nil
 }
 
-func (b *Bus) LastID() uint64 {
+func (b *Bus) Start() string {
+	return ""
+}
+
+func (b *Bus) End() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.lastID
+
+	if len(b.events) == 0 {
+		return ""
+	}
+
+	return b.events[len(b.events)-1].ID
+}
+
+// Dump writes all events as JSON to w.
+// It does not affect subscribers.
+func (b *Bus) Dump(w io.Writer) error {
+	b.mu.Lock()
+	events := append([]Event(nil), b.events...)
+	b.mu.Unlock()
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+
+	return enc.Encode(events)
+}
+
+// Load reads events as JSON from r and replaces the current log.
+// It does not notify subscribers.
+func (b *Bus) Load(r io.Reader) error {
+	var events []Event
+	if err := json.NewDecoder(r).Decode(&events); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	b.events = append([]Event(nil), events...)
+	b.mu.Unlock()
+
+	return nil
 }
 
 // NewFromFile creates a new Bus and loads events from the given JSON file.
@@ -224,6 +295,7 @@ func NewFromFile(path string) (*Bus, error) {
 	if err := b.Load(f); err != nil {
 		return nil, err
 	}
+
 	return b, nil
 }
 

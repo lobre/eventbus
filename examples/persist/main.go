@@ -12,7 +12,7 @@ func main() {
 	defer os.Remove(path)
 
 	bus := eventbus.New()
-	bus.Publish("inventory", "Added", 0, map[string]int{"qty": 3})
+	bus.Publish("inventory", "Added", bus.End(), map[string]int{"qty": 3})
 
 	if err := bus.SaveToFile(path); err != nil {
 		panic(err)
@@ -23,7 +23,7 @@ func main() {
 		panic(err)
 	}
 
-	restored.ForEachEvent("inventory", func(e eventbus.Event) {
+	restored.ForEachEvent(eventbus.Query{Topic: "inventory"}, func(e eventbus.Event) {
 		fmt.Printf("restored payload=%v\n", e.Payload)
 	})
 }

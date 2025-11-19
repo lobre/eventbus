@@ -6,7 +6,7 @@ This is a demo library. It is not designed for production: events are only store
 
 ## Basic publish/subscribe (`examples/basic`)
 
-`Publish(topic, eventType, afterID, payload)` appends an event if no newer event exists for that topic. Pass `afterID = bus.LastID()` when you want “latest only”, or the `lastID` returned by `ForEachEvent` when you’ve just replayed history. `Subscribe(topic, fromID, bufferSize)` replays events with `ID > fromID` before streaming live ones, so both aggregates and read models always know where they stand. Use `eventbus.BufferDefault` when you don’t care about the exact buffer size.
+`Publish(topic, eventType, afterID, payload)` appends an event if no newer event exists for that topic. Pass `afterID = bus.End()` when you want “latest only”, or reuse the ID captured while iterating the log. `Subscribe(topic, fromID, bufferSize)` replays events whose IDs sort after `fromID` before streaming live ones, so both aggregates and read models always know where they stand. Use `eventbus.DefaultCap` when you don’t care about the exact buffer size, and pass `eventbus.AllTopics` to subscribe to every topic.
 
 ## Buffer tuning (`examples/buffer`)
 
@@ -14,11 +14,11 @@ Each subscriber owns its buffer. A size of `1` keeps only the newest value (“s
 
 ## Live projections (`examples/projection`)
 
-Subscribe early and keep derived state (e.g., orders per user) in memory. Pass `fromID = 0` at startup to replay everything, or `fromID = bus.LastID()` if you only want live updates. The projection example demonstrates a long-lived read model fed by the subscription channel.
+Subscribe early and keep derived state (e.g., orders per user) in memory. Pass `fromID = bus.Start()` at startup to replay everything, or `fromID = bus.End()` if you only want live updates. The projection example demonstrates a long-lived read model fed by the subscription channel.
 
 ## Aggregates (`examples/aggregate`)
 
-`ForEachEvent(topic, fn)` walks the current log and returns the ID of the last event processed. Aggregates use it to rebuild state, enforce business rules, and then call `Publish` with that ID to ensure no newer event slipped in. The aggregate example shows a basic command-side check before emitting a new event.
+`ForEachEvent(query, fn)` walks the current log and calls `fn` for each matching event. Aggregates use `eventbus.Query{Topic: ...}` to rebuild state, capture the last ID they saw, and then call `Publish` with that ID to ensure no newer event slipped in. The aggregate example shows a basic command-side check before emitting a new event.
 
 ## Persistence helpers (`examples/persist`)
 
@@ -26,7 +26,7 @@ Subscribe early and keep derived state (e.g., orders per user) in memory. Pass `
 
 ## Sink (`examples/sink`)
 
-Subscribing to the empty topic (`""`) receives every event. You can forward that stream anywhere; the sink example appends each event to a file, acting as a simple audit log.
+Subscribing to `eventbus.AllTopics` receives every event. You can forward that stream anywhere; the sink example appends each event to a file, acting as a simple audit log.
 
 ## Server-sent events (`examples/sse`)
 

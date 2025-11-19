@@ -10,7 +10,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	sub, _ := bus.Subscribe("chat", 0, eventbus.BufferDefault)
+	sub, _ := bus.Subscribe("chat", bus.Start(), eventbus.DefaultCap)
 	defer sub.Close()
 
 	go func() {
@@ -19,7 +19,7 @@ func main() {
 		}
 	}()
 
-	var last uint64
+	last := bus.End()
 	last, _ = bus.Publish("chat", "MessagePosted", last, "hello")
 	bus.Publish("chat", "MessagePosted", last, "world")
 

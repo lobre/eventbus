@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 
 	"github.com/lobre/eventbus"
 )
@@ -12,13 +11,13 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	var last uint64
+	last := bus.End()
 	last, _ = bus.Publish("notifications", "Ping", last, "hello")
 	bus.Publish("notifications", "Ping", last, "world")
 
 	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-		lastID := parseLastEventID(r.Header.Get("Last-Event-ID"))
-		sub, _ := bus.Subscribe("notifications", lastID, eventbus.BufferDefault)
+		lastID := r.Header.Get("Last-Event-ID")
+		sub, _ := bus.Subscribe("notifications", lastID, eventbus.DefaultCap)
 		defer sub.Close()
 
 		sse, _ := newSSE(w)
@@ -33,7 +32,7 @@ func main() {
 	})
 
 	http.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
-		bus.Publish("notifications", "Ping", bus.LastID(), "tick")
+		bus.Publish("notifications", "Ping", bus.End(), "tick")
 		w.WriteHeader(http.StatusAccepted)
 	})
 
@@ -57,19 +56,8 @@ func newSSE(w http.ResponseWriter) (*sseWriter, error) {
 }
 
 func (s *sseWriter) Write(e eventbus.Event) {
-	fmt.Fprintf(s.w, "id: %d\n", e.ID)
+	fmt.Fprintf(s.w, "id: %s\n", e.ID)
 	fmt.Fprintf(s.w, "event: %s\n", e.Type)
 	fmt.Fprintf(s.w, "data: %v\n\n", e.Payload)
 	s.flush()
-}
-
-func parseLastEventID(raw string) uint64 {
-	if raw == "" {
-		return 0
-	}
-	id, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return id
 }

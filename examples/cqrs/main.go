@@ -13,7 +13,7 @@ func main() {
 	accountTopic := "account-42"
 
 	projection := &balanceProjection{}
-	sub, _ := bus.Subscribe(accountTopic, 0, eventbus.BufferDefault)
+	sub, _ := bus.Subscribe(accountTopic, bus.Start(), eventbus.DefaultCap)
 	defer sub.Close()
 
 	go func() {
@@ -39,22 +39,28 @@ type command struct {
 func handleCommand(bus *eventbus.Bus, topic string, cmd command) {
 	switch cmd.Name {
 	case "Deposit":
-		bus.Publish(topic, "Deposited", bus.LastID(), cmd.Amount)
+		bus.Publish(topic, "Deposited", bus.End(), cmd.Amount)
+		
 	case "Withdraw":
-		balance, last := replayBalance(bus, topic)
+		balance, id := replayBalance(bus, topic)
+		
 		if balance < cmd.Amount {
 			fmt.Println("withdraw rejected: insufficient funds")
 			return
 		}
-		bus.Publish(topic, "Withdrawn", last, cmd.Amount)
+		
+		bus.Publish(topic, "Withdrawn", id, cmd.Amount)
+		
 	default:
 		fmt.Printf("unknown command %q ignored\n", cmd.Name)
 	}
 }
 
-func replayBalance(bus *eventbus.Bus, topic string) (int, uint64) {
+func replayBalance(bus *eventbus.Bus, topic string) (int, string) {
 	balance := 0
-	last := bus.ForEachEvent(topic, func(e eventbus.Event) {
+	id := bus.Start()
+	
+	bus.ForEachEvent(eventbus.Query{Topic: topic}, func(e eventbus.Event) {
 		amt := e.Payload.(int)
 		if e.Type == "Deposited" {
 			balance += amt
@@ -62,8 +68,10 @@ func replayBalance(bus *eventbus.Bus, topic string) (int, uint64) {
 		if e.Type == "Withdrawn" {
 			balance -= amt
 		}
+		id = e.ID
 	})
-	return balance, last
+	
+	return balance, id
 }
 
 type balanceProjection struct {

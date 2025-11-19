@@ -10,7 +10,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	sub, _ := bus.Subscribe("signals", 0, 1)
+	sub, _ := bus.Subscribe("signals", bus.Start(), 1)
 	defer sub.Close()
 
 	go func() {
@@ -20,7 +20,7 @@ func main() {
 		}
 	}()
 
-	var last uint64
+	last := bus.End()
 	for i := 0; i < 5; i++ {
 		payload := fmt.Sprintf("burst-%d", i)
 		last, _ = bus.Publish("signals", "Burst", last, payload)
