@@ -20,7 +20,7 @@ func main() {
 		}
 	}()
 
-	last := bus.End()
+	last := bus.Start()
 	for i := 0; i < 5; i++ {
 		payload := fmt.Sprintf("burst-%d", i)
 		last, _ = bus.Publish("signals", "Burst", last, payload)

@@ -17,7 +17,7 @@ func main() {
 
 	go ledger.consume(sub.C)
 
-	last := bus.End()
+	last := bus.Start()
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "A1", "user": "alice"})
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "B2", "user": "bob"})
 	bus.Publish("orders", "Placed", last, map[string]string{"id": "C3", "user": "alice"})

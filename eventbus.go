@@ -11,15 +11,29 @@ import (
 )
 
 // Event is the unit that gets stored and published.
+// Events are immutable once appended to the bus.
 type Event struct {
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
-	Topic     string    `json:"topic"`
-	Type      string    `json:"type"`
-	Payload   any       `json:"payload"`
+
+	// Topic identifies the stream this event belongs to. It is typically a
+	// stable key such as an aggregate ID or logical stream name.
+	Topic string `json:"topic"`
+
+	// Type describes the kind of event within a topic, and is commonly used
+	// for routing and deserialization decisions.
+	Type string `json:"type"`
+
+	// Payload holds the event data.
+	// It is typically a concrete, JSON-serializable struct value that callers
+	// type-assert when consuming events.
+	Payload any `json:"payload"`
 }
 
 // Subscription exposes an events channel plus a Close function to stop delivery.
+//
+// Delivery is best-effort: if the subscriber cannot keep up and its channel
+// buffer fills up, events for that subscriber are silently dropped.
 type Subscription struct {
 	C     <-chan Event
 	Close func()
@@ -34,13 +48,16 @@ const (
 	// DefaultCap configures the recommended subscriber channel capacity.
 	DefaultCap = 1024
 
-	// AllTopics selects every topic when subscribing.
-	AllTopics = ""
+	// AllTopics selects every topic when subscribing or in queries.
+	AllTopics = "*"
 )
 
 var (
+	// ErrConflict is returned when you use Publish with a stale lastID for that topic.
 	ErrConflict = errors.New("eventbus: topic advanced")
-	ErrNoTopic  = errors.New("eventbus: topic required")
+
+	// ErrNoTopic is returned when you publish or subscribe with an empty topic.
+	ErrNoTopic = errors.New("eventbus: topic required")
 )
 
 // Bus is an in-memory pub/sub bus with an append-only event log.
@@ -84,7 +101,7 @@ func (b *Bus) filter(q Query) []Event {
 
 	events := make([]Event, 0, len(b.events))
 	for _, e := range b.events {
-		if q.Topic != "" && e.Topic != q.Topic {
+		if q.Topic != "" && q.Topic != AllTopics && e.Topic != q.Topic {
 			continue
 		}
 		if q.Type != "" && e.Type != q.Type {
@@ -122,29 +139,71 @@ func (b *Bus) lookup(id string) *Event {
 	return nil
 }
 
-// Query configures how events are selected when calling Events.
+// Query configures how events are selected when reading from the log.
+//
+// Zero values disable their corresponding filters: an empty Topic (or
+// AllTopics) selects all topics, an empty Type selects all types, and a zero
+// time for Since or Until disables that time bound.
 type Query struct {
-	Topic   string
-	Type    string
-	Since   time.Time
-	Until   time.Time
+	// Topic restricts the query to events with this topic.
+	// An empty value or AllTopics selects all topics.
+	Topic string
+
+	// Type restricts the query to events with this type.
+	// An empty value selects all types.
+	Type string
+
+	// Since selects events whose timestamp is strictly after this time.
+	// A zero value disables the lower time bound.
+	Since time.Time
+
+	// Until selects events whose timestamp is strictly before this time.
+	// A zero value disables the upper time bound.
+	Until time.Time
+
+	// AfterID selects events strictly after the event with the given ID.
+	// If no event with that ID exists, AfterID is ignored.
 	AfterID string
 }
 
 // ForEachEvent calls fn with each event that matches q.
-// Zero values in q disable their corresponding filters.
+//
+// Zero values in q disable their corresponding filters, as described on Query.
+// The set of matching events is determined at the time of the call; new events
+// appended after ForEachEvent begins are not passed to fn.
 func (b *Bus) ForEachEvent(q Query, fn func(Event)) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, e := range b.filter(q) {
+	events := b.filter(q)
+	b.mu.Unlock()
+
+	for _, e := range events {
 		fn(e)
 	}
 }
 
-// Subscribe registers a new subscriber for a topic. fromID controls the replay window:
-// events with ID greater than fromID are replayed before live delivery begins.
-// bufferSize configures the subscriber's channel capacity.
+// Subscribe registers a new subscriber for a topic.
+//
+// topic must be non-empty. To subscribe to all topics, use AllTopics.
+// If topic is empty, Subscribe returns ErrNoTopic.
+//
+// fromID is an exclusive lower bound: events with ID greater than fromID are
+// replayed to the subscriber before live delivery begins. Using Start() as
+// fromID replays all existing events; using End() replays no existing events
+// and only delivers new ones.
+//
+// bufferSize configures the subscriber's channel capacity. If bufferSize is
+// less than or equal to zero, DefaultCap is used.
+//
+// Delivery is best-effort: if the subscriber's channel buffer is full, both
+// replayed events and live events for that subscriber are silently dropped.
+//
+// The returned Subscription's Close function unregisters the subscriber and
+// closes the events channel.
 func (b *Bus) Subscribe(topic string, fromID string, bufferSize int) (*Subscription, error) {
+	if topic == "" {
+		return nil, ErrNoTopic
+	}
+
 	if bufferSize <= 0 {
 		bufferSize = DefaultCap
 	}
@@ -193,12 +252,26 @@ func (b *Bus) Subscribe(topic string, fromID string, bufferSize int) (*Subscript
 	return subscription, nil
 }
 
-// Publish appends a new event if topic has not advanced beyond afterID.
-// topic/eventType/payload describe the event, afterID is the last known ID for that topic.
-// If another event with the same topic was added after afterID, ErrConflict is returned.
-// Subscribers drop events when their channel buffer is full.
-// Returns the ID assigned to the appended event on success.
-func (b *Bus) Publish(topic, eventType string, afterID string, payload any) (string, error) {
+// Publish appends a new event for a topic if the topic has not advanced
+// beyond lastID.
+//
+// topic and eventType describe the event. lastID is an exclusive lower
+// bound for this topic: Publish requires that there are no events with the
+// same topic and an ID greater than lastID.
+//
+// Using Start() as lastID publishes only if no events with this topic exist
+// in the bus yet. Using End() as lastID publishes only if no events have
+// been appended since the current end of the bus.
+//
+// If another event with the same topic was added after lastID, Publish
+// returns ErrConflict and does not append. If topic is empty, Publish
+// returns ErrNoTopic and does not append.
+//
+// Subscribers receive the new event on a best-effort basis: if a subscriber's
+// channel buffer is full, the event is silently dropped for that subscriber.
+//
+// On success, Publish returns the ID assigned to the new event.
+func (b *Bus) Publish(topic, eventType string, lastID string, payload any) (string, error) {
 	if topic == "" {
 		return "", ErrNoTopic
 	}
@@ -213,7 +286,7 @@ func (b *Bus) Publish(topic, eventType string, afterID string, payload any) (str
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if len(b.filter(Query{Topic: topic, AfterID: afterID})) > 0 {
+	if len(b.filter(Query{Topic: topic, AfterID: lastID})) > 0 {
 		return "", ErrConflict
 	}
 
@@ -235,10 +308,20 @@ func (b *Bus) Publish(topic, eventType string, afterID string, payload any) (str
 	return e.ID, nil
 }
 
+// Start returns the logical lower bound ID of the bus.
+//
+// Start represents a position before the first event. It currently returns
+// the empty string, which callers can pass as fromID or lastID when they
+// want to treat the beginning of the bus as their lower bound.
 func (b *Bus) Start() string {
 	return ""
 }
 
+// End returns the ID of the last event in the bus.
+//
+// If the bus is empty, End returns the empty string. Callers can pass the
+// value returned by End as fromID when subscribing, or as lastID when
+// publishing, to treat the current end of the bus as their lower bound.
 func (b *Bus) End() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -250,7 +333,7 @@ func (b *Bus) End() string {
 	return b.events[len(b.events)-1].ID
 }
 
-// Dump writes all events as JSON to w.
+// Dump writes a JSON snapshot of all events to w.
 // It does not affect subscribers.
 func (b *Bus) Dump(w io.Writer) error {
 	b.mu.Lock()
@@ -264,7 +347,13 @@ func (b *Bus) Dump(w io.Writer) error {
 }
 
 // Load reads events as JSON from r and replaces the current log.
-// It does not notify subscribers.
+//
+// The new events take effect atomically with respect to subscribers, but no
+// notifications are sent: subscribers are not rewound or updated.
+//
+// Load trusts the IDs in the input. Future calls to Publish rely on those IDs
+// being unique and parseable; invalid or non-sequential IDs may cause Publish
+// to panic when generating the next ID.
 func (b *Bus) Load(r io.Reader) error {
 	var events []Event
 	if err := json.NewDecoder(r).Decode(&events); err != nil {
@@ -279,7 +368,9 @@ func (b *Bus) Load(r io.Reader) error {
 }
 
 // NewFromFile creates a new Bus and loads events from the given JSON file.
-// If the file does not exist, it returns an empty bus and nil error.
+//
+// If the file does not exist, NewFromFile returns an empty bus and a nil error.
+// If the file exists but cannot be decoded, an error is returned.
 func NewFromFile(path string) (*Bus, error) {
 	b := New()
 
@@ -299,7 +390,8 @@ func NewFromFile(path string) (*Bus, error) {
 	return b, nil
 }
 
-// SaveToFile dumps all events to the given path, overwriting the file if it exists.
+// SaveToFile dumps all events to the given path as JSON, overwriting the file
+// if it exists. The write is a snapshot and does not affect subscribers.
 func (b *Bus) SaveToFile(path string) error {
 	f, err := os.Create(path)
 	if err != nil {

@@ -32,10 +32,11 @@ func main() {
 		}
 	}()
 
-	last := bus.End()
+	last := bus.Start()
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "X1"})
 	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "X2"})
-	bus.Publish("payments", "Accepted", last, map[string]string{"id": "P1"})
+
+	bus.Publish("payments", "Accepted", bus.Start(), map[string]string{"id": "P1"})
 
 	time.Sleep(50 * time.Millisecond)
 

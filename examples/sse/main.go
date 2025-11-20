@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/lobre/eventbus"
 )
@@ -11,7 +12,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	last := bus.End()
+	last := bus.Start()
 	last, _ = bus.Publish("notifications", "Ping", last, "hello")
 	bus.Publish("notifications", "Ping", last, "world")
 

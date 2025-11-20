@@ -40,17 +40,17 @@ func handleCommand(bus *eventbus.Bus, topic string, cmd command) {
 	switch cmd.Name {
 	case "Deposit":
 		bus.Publish(topic, "Deposited", bus.End(), cmd.Amount)
-		
+
 	case "Withdraw":
 		balance, id := replayBalance(bus, topic)
-		
+
 		if balance < cmd.Amount {
 			fmt.Println("withdraw rejected: insufficient funds")
 			return
 		}
-		
+
 		bus.Publish(topic, "Withdrawn", id, cmd.Amount)
-		
+
 	default:
 		fmt.Printf("unknown command %q ignored\n", cmd.Name)
 	}
@@ -59,7 +59,7 @@ func handleCommand(bus *eventbus.Bus, topic string, cmd command) {
 func replayBalance(bus *eventbus.Bus, topic string) (int, string) {
 	balance := 0
 	id := bus.Start()
-	
+
 	bus.ForEachEvent(eventbus.Query{Topic: topic}, func(e eventbus.Event) {
 		amt := e.Payload.(int)
 		if e.Type == "Deposited" {
@@ -70,7 +70,7 @@ func replayBalance(bus *eventbus.Bus, topic string) (int, string) {
 		}
 		id = e.ID
 	})
-	
+
 	return balance, id
 }
 

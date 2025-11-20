@@ -6,7 +6,7 @@ This is a demo library. It is not designed for production: events are only store
 
 ## Basic publish/subscribe (`examples/basic`)
 
-`Publish(topic, eventType, afterID, payload)` appends an event if no newer event exists for that topic. Pass `afterID = bus.End()` when you want “latest only”, or reuse the ID captured while iterating the log. `Subscribe(topic, fromID, bufferSize)` replays events whose IDs sort after `fromID` before streaming live ones, so both aggregates and read models always know where they stand. Use `eventbus.DefaultCap` when you don’t care about the exact buffer size, and pass `eventbus.AllTopics` to subscribe to every topic.
+`Publish(topic, eventType, lastID, payload)` appends an event if no newer event exists for that topic. Pass the last event ID you observed for that topic (e.g., from `ForEachEvent` or a previous publish), or use `lastID = bus.End()` when you simply want to append at the current end. `Subscribe(topic, fromID, bufferSize)` replays events whose IDs sort after `fromID` before streaming live ones, so both aggregates and read models always know where they stand. Use `eventbus.DefaultCap` when you don’t care about the exact buffer size, and pass `eventbus.AllTopics` to subscribe to every topic.
 
 ## Buffer tuning (`examples/buffer`)
 

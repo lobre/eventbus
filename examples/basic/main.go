@@ -19,7 +19,7 @@ func main() {
 		}
 	}()
 
-	last := bus.End()
+	last := bus.Start()
 	last, _ = bus.Publish("chat", "MessagePosted", last, "hello")
 	bus.Publish("chat", "MessagePosted", last, "world")
 
