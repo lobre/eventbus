@@ -10,7 +10,7 @@ import (
 func main() {
 	bus := eventbus.New()
 
-	sub, _ := bus.Subscribe("chat", bus.Start(), eventbus.DefaultCap)
+	sub, _ := bus.Subscribe("chat", bus.Start())
 	defer sub.Close()
 
 	go func() {
@@ -20,8 +20,8 @@ func main() {
 	}()
 
 	last := bus.Start()
-	last, _ = bus.Publish("chat", "MessagePosted", last, "hello")
-	bus.Publish("chat", "MessagePosted", last, "world")
+	last, _ = bus.Publish("chat", "MessagePosted", "hello", last)
+	bus.Publish("chat", "MessagePosted", "world", last)
 
 	time.Sleep(50 * time.Millisecond)
 }

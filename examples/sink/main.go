@@ -14,7 +14,7 @@ func main() {
 
 	bus := eventbus.New()
 
-	sink, _ := bus.Subscribe(eventbus.AllTopics, bus.Start(), eventbus.DefaultCap)
+	sink, _ := bus.Subscribe(eventbus.AllTopics, bus.Start())
 	defer sink.Close()
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -33,10 +33,10 @@ func main() {
 	}()
 
 	last := bus.Start()
-	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "X1"})
-	last, _ = bus.Publish("orders", "Placed", last, map[string]string{"id": "X2"})
+	last, _ = bus.Publish("orders", "Placed", map[string]string{"id": "X1"}, last)
+	last, _ = bus.Publish("orders", "Placed", map[string]string{"id": "X2"}, last)
 
-	bus.Publish("payments", "Accepted", bus.Start(), map[string]string{"id": "P1"})
+	bus.Publish("payments", "Accepted", map[string]string{"id": "P1"}, bus.Start())
 
 	time.Sleep(50 * time.Millisecond)
 

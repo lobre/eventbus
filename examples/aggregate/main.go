@@ -35,6 +35,6 @@ func recordExpense(bus *eventbus.Bus, amount int) error {
 		return fmt.Errorf("budget exceeded: total=%d attempted=%d", state.total, amount)
 	}
 
-	_, err := bus.Publish("budget", "ExpenseRecorded", lastID, amount)
+	_, err := bus.Publish("budget", "ExpenseRecorded", amount, lastID)
 	return err
 }

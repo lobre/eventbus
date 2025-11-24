@@ -13,7 +13,7 @@ func main() {
 	accountTopic := "account-42"
 
 	projection := &balanceProjection{}
-	sub, _ := bus.Subscribe(accountTopic, bus.Start(), eventbus.DefaultCap)
+	sub, _ := bus.Subscribe(accountTopic, bus.Start())
 	defer sub.Close()
 
 	go func() {
@@ -39,7 +39,7 @@ type command struct {
 func handleCommand(bus *eventbus.Bus, topic string, cmd command) {
 	switch cmd.Name {
 	case "Deposit":
-		bus.Publish(topic, "Deposited", bus.End(), cmd.Amount)
+		bus.Publish(topic, "Deposited", cmd.Amount, bus.End())
 
 	case "Withdraw":
 		balance, id := replayBalance(bus, topic)
@@ -49,7 +49,7 @@ func handleCommand(bus *eventbus.Bus, topic string, cmd command) {
 			return
 		}
 
-		bus.Publish(topic, "Withdrawn", id, cmd.Amount)
+		bus.Publish(topic, "Withdrawn", cmd.Amount, id)
 
 	default:
 		fmt.Printf("unknown command %q ignored\n", cmd.Name)

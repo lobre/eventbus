@@ -12,12 +12,12 @@ func main() {
 	bus := eventbus.New()
 
 	last := bus.Start()
-	last, _ = bus.Publish("notifications", "Ping", last, "hello")
-	bus.Publish("notifications", "Ping", last, "world")
+	last, _ = bus.Publish("notifications", "Ping", "hello", last)
+	bus.Publish("notifications", "Ping", "world", last)
 
 	http.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		lastID := r.Header.Get("Last-Event-ID")
-		sub, _ := bus.Subscribe("notifications", lastID, eventbus.DefaultCap)
+		sub, _ := bus.Subscribe("notifications", lastID)
 		defer sub.Close()
 
 		sse, _ := newSSE(w)
@@ -32,7 +32,7 @@ func main() {
 	})
 
 	http.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
-		bus.Publish("notifications", "Ping", bus.End(), "tick")
+		bus.Publish("notifications", "Ping", "tick", bus.End())
 		w.WriteHeader(http.StatusAccepted)
 	})
 

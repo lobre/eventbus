@@ -44,13 +44,8 @@ type subscriber struct {
 	ch    chan Event
 }
 
-const (
-	// DefaultCap configures the recommended subscriber channel capacity.
-	DefaultCap = 1024
-
-	// AllTopics selects every topic when subscribing or in queries.
-	AllTopics = "*"
-)
+// AllTopics selects every topic when subscribing or in queries.
+const AllTopics = "*"
 
 var (
 	// ErrConflict is returned when you use Publish with a stale lastID for that topic.
@@ -58,6 +53,9 @@ var (
 
 	// ErrNoTopic is returned when you publish or subscribe with an empty topic.
 	ErrNoTopic = errors.New("eventbus: topic required")
+
+	// ErrInvalidBuffer is returned when a negative buffer size is provided.
+	ErrInvalidBuffer = errors.New("eventbus: invalid buffer size")
 )
 
 // Bus is an in-memory pub/sub bus with an append-only event log.
@@ -191,22 +189,29 @@ func (b *Bus) ForEachEvent(q Query, fn func(Event)) {
 // fromID replays all existing events; using End() replays no existing events
 // and only delivers new ones.
 //
-// bufferSize configures the subscriber's channel capacity. If bufferSize is
-// less than or equal to zero, DefaultCap is used.
-//
 // Delivery is best-effort: if the subscriber's channel buffer is full, both
 // replayed events and live events for that subscriber are silently dropped.
+// Default buffer size is 1024.
 //
 // The returned Subscription's Close function unregisters the subscriber and
 // closes the events channel.
-func (b *Bus) Subscribe(topic string, fromID string, bufferSize int) (*Subscription, error) {
+func (b *Bus) Subscribe(topic string, fromID string) (*Subscription, error) {
+	return b.SubscribeWithBufferSize(topic, fromID, 1024)
+}
+
+// SubscribeWithBufferSize registers a new subscriber and configures its buffer size.
+//
+// Same as Subscribe but lets you choose the buffer size. Returns ErrInvalidBuffer
+// when bufferSize is negative. A bufferSize of 0 creates an unbuffered channel.
+func (b *Bus) SubscribeWithBufferSize(topic string, fromID string, bufferSize int) (*Subscription, error) {
 	if topic == "" {
 		return nil, ErrNoTopic
 	}
 
-	if bufferSize <= 0 {
-		bufferSize = DefaultCap
+	if bufferSize < 0 {
+		return nil, ErrInvalidBuffer
 	}
+
 	sub := &subscriber{
 		topic: topic,
 		ch:    make(chan Event, bufferSize),
@@ -260,8 +265,7 @@ func (b *Bus) Subscribe(topic string, fromID string, bufferSize int) (*Subscript
 // same topic and an ID greater than lastID.
 //
 // Using Start() as lastID publishes only if no events with this topic exist
-// in the bus yet. Using End() as lastID publishes only if no events have
-// been appended since the current end of the bus.
+// in the bus yet. Using End() as lastID appends after the current end of the bus.
 //
 // If another event with the same topic was added after lastID, Publish
 // returns ErrConflict and does not append. If topic is empty, Publish
@@ -271,7 +275,17 @@ func (b *Bus) Subscribe(topic string, fromID string, bufferSize int) (*Subscript
 // channel buffer is full, the event is silently dropped for that subscriber.
 //
 // On success, Publish returns the ID assigned to the new event.
-func (b *Bus) Publish(topic, eventType string, lastID string, payload any) (string, error) {
+func (b *Bus) Publish(topic, eventType string, payload any, lastID string) (string, error) {
+	return b.publish(topic, eventType, payload, lastID, true)
+}
+
+// PublishUnstored delivers an event to subscribers without appending it to the log.
+func (b *Bus) PublishUnstored(topic, eventType string, payload any) error {
+	_, err := b.publish(topic, eventType, payload, "", false)
+	return err
+}
+
+func (b *Bus) publish(topic, eventType string, payload any, lastID string, store bool) (string, error) {
 	if topic == "" {
 		return "", ErrNoTopic
 	}
@@ -286,12 +300,14 @@ func (b *Bus) Publish(topic, eventType string, lastID string, payload any) (stri
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if len(b.filter(Query{Topic: topic, AfterID: lastID})) > 0 {
+	if store && len(b.filter(Query{Topic: topic, AfterID: lastID})) > 0 {
 		return "", ErrConflict
 	}
 
-	e.ID = b.yieldID()
-	b.events = append(b.events, e)
+	if store {
+		e.ID = b.yieldID()
+		b.events = append(b.events, e)
+	}
 
 	for sub := range b.subscribers {
 		if sub.topic != AllTopics && sub.topic != e.Topic {
