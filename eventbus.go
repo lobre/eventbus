@@ -10,6 +10,20 @@ import (
 	"time"
 )
 
+// AllTopics selects every topic when subscribing or in queries.
+const AllTopics = "*"
+
+var (
+	// ErrConflict is returned when you use Publish with a stale lastID for that topic.
+	ErrConflict = errors.New("eventbus: topic advanced")
+
+	// ErrNoTopic is returned when you publish or subscribe with an empty topic.
+	ErrNoTopic = errors.New("eventbus: topic required")
+
+	// ErrInvalidBuffer is returned when a negative buffer size is provided.
+	ErrInvalidBuffer = errors.New("eventbus: invalid buffer size")
+)
+
 // Event is the unit that gets stored and published.
 // Events are immutable once appended to the bus.
 type Event struct {
@@ -44,19 +58,36 @@ type subscriber struct {
 	ch    chan Event
 }
 
-// AllTopics selects every topic when subscribing or in queries.
-const AllTopics = "*"
+// Query configures how events are selected when reading from the log.
+//
+// Zero values disable their corresponding filters: an empty Topic (or
+// AllTopics) selects all topics, an empty Type selects all types, and a zero
+// time for Since or Until disables that time bound.
+type Query struct {
+	// Topic restricts the query to events with this topic.
+	// An empty value or AllTopics selects all topics.
+	Topic string
 
-var (
-	// ErrConflict is returned when you use Publish with a stale lastID for that topic.
-	ErrConflict = errors.New("eventbus: topic advanced")
+	// Type restricts the query to events with this type.
+	// An empty value selects all types.
+	Type string
 
-	// ErrNoTopic is returned when you publish or subscribe with an empty topic.
-	ErrNoTopic = errors.New("eventbus: topic required")
+	// Since selects events whose timestamp is strictly after this time.
+	// A zero value disables the lower time bound.
+	Since time.Time
 
-	// ErrInvalidBuffer is returned when a negative buffer size is provided.
-	ErrInvalidBuffer = errors.New("eventbus: invalid buffer size")
-)
+	// Until selects events whose timestamp is strictly before this time.
+	// A zero value disables the upper time bound.
+	Until time.Time
+
+	// AfterID selects events strictly after the event with the given ID.
+	// If no event with that ID exists, AfterID is ignored.
+	AfterID string
+
+	// PayloadFilter selects events whose payload satisfies the predicate.
+	// A nil value disables payload filtering.
+	PayloadFilter func(any) bool
+}
 
 // Bus is an in-memory pub/sub bus with an append-only event log.
 type Bus struct {
@@ -94,6 +125,9 @@ func (b *Bus) filter(q Query) []Event {
 	if q.AfterID != "" {
 		if e := b.lookup(q.AfterID); e != nil {
 			since = e.Timestamp
+		} else {
+			// unknown AfterID: treat as no results
+			return nil
 		}
 	}
 
@@ -103,6 +137,9 @@ func (b *Bus) filter(q Query) []Event {
 			continue
 		}
 		if q.Type != "" && e.Type != q.Type {
+			continue
+		}
+		if q.PayloadFilter != nil && !q.PayloadFilter(e.Payload) {
 			continue
 		}
 		if !q.Since.IsZero() && !e.Timestamp.After(q.Since) {
@@ -135,33 +172,6 @@ func (b *Bus) lookup(id string) *Event {
 	}
 
 	return nil
-}
-
-// Query configures how events are selected when reading from the log.
-//
-// Zero values disable their corresponding filters: an empty Topic (or
-// AllTopics) selects all topics, an empty Type selects all types, and a zero
-// time for Since or Until disables that time bound.
-type Query struct {
-	// Topic restricts the query to events with this topic.
-	// An empty value or AllTopics selects all topics.
-	Topic string
-
-	// Type restricts the query to events with this type.
-	// An empty value selects all types.
-	Type string
-
-	// Since selects events whose timestamp is strictly after this time.
-	// A zero value disables the lower time bound.
-	Since time.Time
-
-	// Until selects events whose timestamp is strictly before this time.
-	// A zero value disables the upper time bound.
-	Until time.Time
-
-	// AfterID selects events strictly after the event with the given ID.
-	// If no event with that ID exists, AfterID is ignored.
-	AfterID string
 }
 
 // ForEachEvent calls fn with each event that matches q.
@@ -383,6 +393,18 @@ func (b *Bus) Load(r io.Reader) error {
 	return nil
 }
 
+// SaveToFile dumps all events to the given path as JSON, overwriting the file
+// if it exists. The write is a snapshot and does not affect subscribers.
+func (b *Bus) SaveToFile(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return b.Dump(f)
+}
+
 // NewFromFile creates a new Bus and loads events from the given JSON file.
 //
 // If the file does not exist, NewFromFile returns an empty bus and a nil error.
@@ -404,16 +426,4 @@ func NewFromFile(path string) (*Bus, error) {
 	}
 
 	return b, nil
-}
-
-// SaveToFile dumps all events to the given path as JSON, overwriting the file
-// if it exists. The write is a snapshot and does not affect subscribers.
-func (b *Bus) SaveToFile(path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return b.Dump(f)
 }
