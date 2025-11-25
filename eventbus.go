@@ -81,7 +81,7 @@ type Query struct {
 	Until time.Time
 
 	// AfterID selects events strictly after the event with the given ID.
-	// If no event with that ID exists, AfterID is ignored.
+	// If no event with that ID exists, no events are returned.
 	AfterID string
 
 	// PayloadFilter selects events whose payload satisfies the predicate.
@@ -93,6 +93,7 @@ type Query struct {
 type Bus struct {
 	mu          sync.Mutex
 	events      []Event
+	indexByID   map[string]int
 	subscribers map[*subscriber]struct{}
 }
 
@@ -100,6 +101,7 @@ type Bus struct {
 func New() *Bus {
 	return &Bus{
 		events:      make([]Event, 0),
+		indexByID:   make(map[string]int),
 		subscribers: make(map[*subscriber]struct{}),
 	}
 }
@@ -121,18 +123,19 @@ func (b *Bus) yieldID() string {
 }
 
 func (b *Bus) filter(q Query) []Event {
-	var since time.Time
+	start := 0
 	if q.AfterID != "" {
-		if e := b.lookup(q.AfterID); e != nil {
-			since = e.Timestamp
-		} else {
+		idx, ok := b.indexByID[q.AfterID]
+		if !ok {
 			// unknown AfterID: treat as no results
 			return nil
 		}
+		start = idx + 1
 	}
 
-	events := make([]Event, 0, len(b.events))
-	for _, e := range b.events {
+	events := make([]Event, 0, len(b.events)-start)
+	for i := start; i < len(b.events); i++ {
+		e := b.events[i]
 		if q.Topic != "" && q.Topic != AllTopics && e.Topic != q.Topic {
 			continue
 		}
@@ -148,9 +151,6 @@ func (b *Bus) filter(q Query) []Event {
 		if !q.Until.IsZero() && !e.Timestamp.Before(q.Until) {
 			continue
 		}
-		if !since.IsZero() && !e.Timestamp.After(since) {
-			continue
-		}
 		events = append(events, e)
 	}
 
@@ -164,14 +164,13 @@ func (b *Bus) lookup(id string) *Event {
 		return nil
 	}
 
-	for i := len(b.events) - 1; i >= 0; i-- {
-		if b.events[i].ID == id {
-			e := b.events[i]
-			return &e
-		}
+	idx, ok := b.indexByID[id]
+	if !ok {
+		return nil
 	}
 
-	return nil
+	e := b.events[idx]
+	return &e
 }
 
 // ForEachEvent calls fn with each event that matches q.
@@ -317,6 +316,7 @@ func (b *Bus) publish(topic, eventType string, payload any, lastID string, store
 	if store {
 		e.ID = b.yieldID()
 		b.events = append(b.events, e)
+		b.indexByID[e.ID] = len(b.events) - 1
 	}
 
 	for sub := range b.subscribers {
@@ -387,8 +387,15 @@ func (b *Bus) Load(r io.Reader) error {
 	}
 
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.events = append([]Event(nil), events...)
-	b.mu.Unlock()
+
+	b.indexByID = make(map[string]int, len(b.events))
+
+	for i, e := range b.events {
+		b.indexByID[e.ID] = i
+	}
 
 	return nil
 }
