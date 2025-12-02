@@ -1,5 +1,7 @@
 # eventbus
 
+> /!\ I realized I was using the wrong patterns here, not especially adapted for backpressure with this push-model on the read side, and optimitic concurrency on the write side. I am stopping the experimentation and will probably start over with better ideas.
+
 eventbus is a single Go file that keeps an in-memory event log and lets you experiment with CQRS and event sourcing without setting up infrastructure. It has just enough features to publish events, subscribe to them, iterate the log, and dump/load snapshots. Everything else lives in the examples.
 
 This is a demo library. It is not designed for production: events are only stored in memory unless you call `Dump`, and there is no clustering or durability story.
